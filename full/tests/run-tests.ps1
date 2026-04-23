@@ -21,7 +21,8 @@ $successCases = @(
     @{ Name = 'early_return'; File = 'tests\samples\early_return.rx'; ExitCode = 7 },
     @{ Name = 'nested_calls'; File = 'tests\samples\nested_calls.rx'; ExitCode = 20 },
     @{ Name = 'break_continue'; File = 'tests\samples\break_continue.rx'; ExitCode = 31 },
-    @{ Name = 'for_loop'; File = 'tests\samples\for_loop.rx'; ExitCode = 7 }
+    @{ Name = 'for_loop'; File = 'tests\samples\for_loop.rx'; ExitCode = 7 },
+        @{ Name = 'loop_expr'; File = 'tests\samples\loop_expr.rx'; ExitCode = 12 }
 )
 
 $failureCases = @(

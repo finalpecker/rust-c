@@ -14,6 +14,7 @@ directory is the place where the production-oriented compiler will evolve.
 - Arithmetic, comparison, and boolean operators
 - `if` / `else` expressions
 - `while` expressions
+- `loop { ... }` expressions
 - `break` and `continue` statements in loops
 - `for <name> in <start>..<end> { ... }` range loops
 - Blocks and block expressions

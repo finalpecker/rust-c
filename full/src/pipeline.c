@@ -91,6 +91,7 @@ typedef enum {
     TOK_IF,
     TOK_ELSE,
     TOK_WHILE,
+    TOK_LOOP,
     TOK_TRUE,
     TOK_FALSE,
     TOK_LPAREN,
@@ -234,6 +235,7 @@ static Token lex_next(Lexer *lex) {
         else if (strcmp(text, "if") == 0) token.kind = TOK_IF;
         else if (strcmp(text, "else") == 0) token.kind = TOK_ELSE;
         else if (strcmp(text, "while") == 0) token.kind = TOK_WHILE;
+        else if (strcmp(text, "loop") == 0) token.kind = TOK_LOOP;
         else if (strcmp(text, "true") == 0) token.kind = TOK_TRUE;
         else if (strcmp(text, "false") == 0) token.kind = TOK_FALSE;
 
@@ -341,6 +343,7 @@ typedef enum {
     EXPR_CALL,
     EXPR_IF,
     EXPR_WHILE,
+    EXPR_LOOP,
     EXPR_BLOCK,
 } ExprKind;
 
@@ -417,6 +420,9 @@ struct Expr {
             Expr *cond;
             Block *body;
         } while_expr;
+        struct {
+            Block *body;
+        } loop_expr;
         struct {
             Block *block;
         } block_expr;
@@ -686,6 +692,11 @@ static Expr *parse_primary(Parser *p) {
         Expr *expr = expr_new(EXPR_WHILE, tok.line, tok.col);
         expr->as.while_expr.cond = parse_expr(p);
         expr->as.while_expr.body = parse_block(p);
+        return expr;
+    }
+    if (parser_match(p, TOK_LOOP)) {
+        Expr *expr = expr_new(EXPR_LOOP, tok.line, tok.col);
+        expr->as.loop_expr.body = parse_block(p);
         return expr;
     }
     if (p->current.kind == TOK_IDENT) {
@@ -1308,6 +1319,14 @@ static Type sema_check_expr(Sema *s, Expr *expr) {
         expr->type = type_unit();
         return expr->type;
     }
+    case EXPR_LOOP: {
+        s->loop_depth++;
+        Type body = sema_check_block(s, expr->as.loop_expr.body);
+        s->loop_depth--;
+        sema_expect_type(body, type_unit(), expr->line, expr->col, "loop body");
+        expr->type = type_unit();
+        return expr->type;
+    }
     case EXPR_BLOCK:
         expr->type = sema_check_block(s, expr->as.block_expr.block);
         return expr->type;
@@ -1752,6 +1771,30 @@ static size_t codegen_expr(Codegen *cg, Function *fn, BytecodeFunction *out, Exp
 
         for (size_t i = 0; i < loop.continue_jumps.len; ++i) {
             out->code.items[loop.continue_jumps.items[i]].arg = (long long)loop_start;
+        }
+        for (size_t i = 0; i < loop.break_jumps.len; ++i) {
+            out->code.items[loop.break_jumps.items[i]].arg = (long long)end_target;
+        }
+
+        instr_emit(&out->code, OP_PUSH_I64, 0, 0);
+        return 1;
+    }
+    case EXPR_LOOP: {
+        size_t loop_start = out->code.len;
+        LoopContext loop;
+        memset(&loop, 0, sizeof(loop));
+        loop.loop_start = loop_start;
+        loop.parent = loop_ctx;
+
+        codegen_block(cg, fn, out, expr->as.loop_expr.body, &loop);
+        instr_emit(&out->code, OP_POP, 0, 0);
+
+        size_t continue_target = out->code.len;
+        instr_emit(&out->code, OP_JUMP, (long long)loop_start, 0);
+        size_t end_target = out->code.len;
+
+        for (size_t i = 0; i < loop.continue_jumps.len; ++i) {
+            out->code.items[loop.continue_jumps.items[i]].arg = (long long)continue_target;
         }
         for (size_t i = 0; i < loop.break_jumps.len; ++i) {
             out->code.items[loop.break_jumps.items[i]].arg = (long long)end_target;
