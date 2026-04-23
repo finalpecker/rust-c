@@ -20,7 +20,8 @@ $successCases = @(
     @{ Name = 'block_expr'; File = 'tests\samples\block_expr.rx'; ExitCode = 10 },
     @{ Name = 'early_return'; File = 'tests\samples\early_return.rx'; ExitCode = 7 },
     @{ Name = 'nested_calls'; File = 'tests\samples\nested_calls.rx'; ExitCode = 20 },
-    @{ Name = 'break_continue'; File = 'tests\samples\break_continue.rx'; ExitCode = 31 }
+    @{ Name = 'break_continue'; File = 'tests\samples\break_continue.rx'; ExitCode = 31 },
+    @{ Name = 'for_loop'; File = 'tests\samples\for_loop.rx'; ExitCode = 7 }
 )
 
 $failureCases = @(
@@ -30,7 +31,8 @@ $failureCases = @(
     @{ Name = 'wrong_arity'; File = 'tests\samples\wrong_arity.rx' },
     @{ Name = 'immutable_assignment'; File = 'tests\samples\immutable_assignment.rx' },
     @{ Name = 'break_outside_loop'; File = 'tests\samples\break_outside_loop.rx' },
-    @{ Name = 'continue_outside_loop'; File = 'tests\samples\continue_outside_loop.rx' }
+    @{ Name = 'continue_outside_loop'; File = 'tests\samples\continue_outside_loop.rx' },
+    @{ Name = 'for_range_type_error'; File = 'tests\samples\for_range_type_error.rx' }
 )
 
 $failures = 0

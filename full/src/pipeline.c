@@ -86,6 +86,8 @@ typedef enum {
     TOK_RETURN,
     TOK_BREAK,
     TOK_CONTINUE,
+    TOK_FOR,
+    TOK_IN,
     TOK_IF,
     TOK_ELSE,
     TOK_WHILE,
@@ -114,6 +116,7 @@ typedef enum {
     TOK_GE,
     TOK_ANDAND,
     TOK_OROR,
+    TOK_DOTDOT,
     TOK_ERROR,
 } TokenKind;
 
@@ -226,6 +229,8 @@ static Token lex_next(Lexer *lex) {
         else if (strcmp(text, "return") == 0) token.kind = TOK_RETURN;
         else if (strcmp(text, "break") == 0) token.kind = TOK_BREAK;
         else if (strcmp(text, "continue") == 0) token.kind = TOK_CONTINUE;
+        else if (strcmp(text, "for") == 0) token.kind = TOK_FOR;
+        else if (strcmp(text, "in") == 0) token.kind = TOK_IN;
         else if (strcmp(text, "if") == 0) token.kind = TOK_IF;
         else if (strcmp(text, "else") == 0) token.kind = TOK_ELSE;
         else if (strcmp(text, "while") == 0) token.kind = TOK_WHILE;
@@ -281,6 +286,11 @@ static Token lex_next(Lexer *lex) {
         lexer_advance(lex);
         lexer_advance(lex);
         return token_make(TOK_OROR, line, col);
+    }
+    if (ch == '.' && lexer_peek_next(lex) == '.') {
+        lexer_advance(lex);
+        lexer_advance(lex);
+        return token_make(TOK_DOTDOT, line, col);
     }
 
     /* Single-character punctuation and operators. */
@@ -360,6 +370,7 @@ typedef enum {
     STMT_RETURN,
     STMT_BREAK,
     STMT_CONTINUE,
+    STMT_FOR,
     STMT_EXPR,
 } StmtKind;
 
@@ -430,6 +441,15 @@ struct Stmt {
             bool has_expr;
             Expr *expr;
         } return_stmt;
+        struct {
+            char *var_name;
+            Expr *start;
+            Expr *end;
+            Block *body;
+            int var_slot;
+            int iter_slot;
+            int end_slot;
+        } for_stmt;
         struct {
             Expr *expr;
         } expr_stmt;
@@ -901,6 +921,27 @@ static Stmt *parse_continue_stmt(Parser *p) {
     return stmt_new(STMT_CONTINUE, tok.line, tok.col);
 }
 
+static Stmt *parse_for_stmt(Parser *p) {
+    Token tok = p->current;
+    parser_expect(p, TOK_FOR, "expected 'for'");
+    if (p->current.kind != TOK_IDENT) {
+        FATAL("expected loop variable name after 'for' at %d:%d", p->current.line, p->current.col);
+    }
+
+    Stmt *stmt = stmt_new(STMT_FOR, tok.line, tok.col);
+    stmt->as.for_stmt.var_name = str_dup_c(p->current.text);
+    parser_advance(p);
+    parser_expect(p, TOK_IN, "expected 'in' in for loop");
+    stmt->as.for_stmt.start = parse_expr(p);
+    parser_expect(p, TOK_DOTDOT, "expected '..' in for loop range");
+    stmt->as.for_stmt.end = parse_expr(p);
+    stmt->as.for_stmt.body = parse_block(p);
+    stmt->as.for_stmt.var_slot = -1;
+    stmt->as.for_stmt.iter_slot = -1;
+    stmt->as.for_stmt.end_slot = -1;
+    return stmt;
+}
+
 static Block *parse_block(Parser *p) {
     Token open = p->current;
     parser_expect(p, TOK_LBRACE, "expected '{'");
@@ -928,6 +969,11 @@ static Block *parse_block(Parser *p) {
         if (p->current.kind == TOK_CONTINUE) {
             Stmt *stmt = parse_continue_stmt(p);
             parser_expect(p, TOK_SEMICOLON, "expected ';' after continue statement");
+            block_push_stmt(block, stmt);
+            continue;
+        }
+        if (p->current.kind == TOK_FOR) {
+            Stmt *stmt = parse_for_stmt(p);
             block_push_stmt(block, stmt);
             continue;
         }
@@ -1295,12 +1341,33 @@ static Type sema_check_stmt(Sema *s, Stmt *stmt, Type function_return_type) {
     }
     case STMT_BREAK:
         if (s->loop_depth <= 0) {
-            FATAL("break is only valid inside while loops at %d:%d", stmt->line, stmt->col);
+            FATAL("break is only valid inside loops at %d:%d", stmt->line, stmt->col);
         }
         return type_unit();
     case STMT_CONTINUE:
         if (s->loop_depth <= 0) {
-            FATAL("continue is only valid inside while loops at %d:%d", stmt->line, stmt->col);
+            FATAL("continue is only valid inside loops at %d:%d", stmt->line, stmt->col);
+        }
+        return type_unit();
+    case STMT_FOR: {
+        Type start_type = sema_check_expr(s, stmt->as.for_stmt.start);
+        Type end_type = sema_check_expr(s, stmt->as.for_stmt.end);
+        sema_expect_type(start_type, type_i64(), stmt->line, stmt->col, "for range start");
+        sema_expect_type(end_type, type_i64(), stmt->line, stmt->col, "for range end");
+
+        stmt->as.for_stmt.iter_slot = s->next_slot++;
+        stmt->as.for_stmt.end_slot = s->next_slot++;
+
+        sema_push_scope(s);
+        sema_declare(s, stmt->as.for_stmt.var_name, type_i64(), false, stmt->line, stmt->col);
+        stmt->as.for_stmt.var_slot = s->next_slot - 1;
+
+        s->loop_depth++;
+        Type body_type = sema_check_block(s, stmt->as.for_stmt.body);
+        s->loop_depth--;
+
+        sema_expect_type(body_type, type_unit(), stmt->line, stmt->col, "for loop body");
+        sema_pop_scope(s);
         }
         return type_unit();
     case STMT_EXPR: {
@@ -1512,6 +1579,47 @@ static size_t codegen_block(Codegen *cg, Function *fn, BytecodeFunction *out, Bl
             }
             index_vec_push(&loop_ctx->continue_jumps, instr_emit(&out->code, OP_JUMP, 0, 0));
             break;
+        case STMT_FOR: {
+            codegen_expr(cg, fn, out, stmt->as.for_stmt.start, loop_ctx);
+            instr_emit(&out->code, OP_STORE, stmt->as.for_stmt.iter_slot, 0);
+            codegen_expr(cg, fn, out, stmt->as.for_stmt.end, loop_ctx);
+            instr_emit(&out->code, OP_STORE, stmt->as.for_stmt.end_slot, 0);
+
+            size_t loop_start = out->code.len;
+            instr_emit(&out->code, OP_LOAD, stmt->as.for_stmt.iter_slot, 0);
+            instr_emit(&out->code, OP_LOAD, stmt->as.for_stmt.end_slot, 0);
+            instr_emit(&out->code, OP_LT, 0, 0);
+            size_t jump_end = instr_emit(&out->code, OP_JUMP_IF_FALSE, 0, 0);
+
+            instr_emit(&out->code, OP_LOAD, stmt->as.for_stmt.iter_slot, 0);
+            instr_emit(&out->code, OP_STORE, stmt->as.for_stmt.var_slot, 0);
+
+            LoopContext loop;
+            memset(&loop, 0, sizeof(loop));
+            loop.loop_start = loop_start;
+            loop.parent = loop_ctx;
+
+            codegen_block(cg, fn, out, stmt->as.for_stmt.body, &loop);
+            instr_emit(&out->code, OP_POP, 0, 0);
+
+            size_t continue_target = out->code.len;
+            instr_emit(&out->code, OP_LOAD, stmt->as.for_stmt.iter_slot, 0);
+            instr_emit(&out->code, OP_PUSH_I64, 1, 0);
+            instr_emit(&out->code, OP_ADD, 0, 0);
+            instr_emit(&out->code, OP_STORE, stmt->as.for_stmt.iter_slot, 0);
+            instr_emit(&out->code, OP_JUMP, (long long)loop_start, 0);
+
+            size_t end_target = out->code.len;
+            out->code.items[jump_end].arg = (long long)end_target;
+
+            for (size_t j = 0; j < loop.continue_jumps.len; ++j) {
+                out->code.items[loop.continue_jumps.items[j]].arg = (long long)continue_target;
+            }
+            for (size_t j = 0; j < loop.break_jumps.len; ++j) {
+                out->code.items[loop.break_jumps.items[j]].arg = (long long)end_target;
+            }
+            break;
+        }
         case STMT_EXPR:
             codegen_expr(cg, fn, out, stmt->as.expr_stmt.expr, loop_ctx);
             instr_emit(&out->code, OP_POP, 0, 0);
