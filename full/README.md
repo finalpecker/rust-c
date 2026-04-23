@@ -79,8 +79,8 @@ The code is being reorganized to make the compiler pipeline easy to extend:
 
 1. Entry point in `src/main.c`
 2. Shared utilities in `src/support.c`
-3. Compiler core in `src/compiler.c`
-4. Public API declaration in `src/compiler.h`
+3. Public compiler API in `src/compiler.c` and `src/compiler.h`
+4. Compiler pipeline implementation in `src/pipeline.c` and `src/pipeline.h`
 5. Compiler stages (lexer -> parser -> semantic analysis -> codegen -> VM)
 
 That flow is deliberate so the project can grow toward a complete compiler

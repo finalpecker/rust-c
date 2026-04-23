@@ -7,9 +7,10 @@ New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 $mainSource = Join-Path $root 'src\main.c'
 $supportSource = Join-Path $root 'src\support.c'
 $compilerSource = Join-Path $root 'src\compiler.c'
+$pipelineSource = Join-Path $root 'src\pipeline.c'
 $output = Join-Path $buildDir 'mini-rustc.exe'
 
-gcc -std=c11 -Wall -Wextra -Wpedantic -O2 $mainSource $supportSource $compilerSource -o $output
+gcc -std=c11 -Wall -Wextra -Wpedantic -O2 $mainSource $supportSource $compilerSource $pipelineSource -o $output
 if ($LASTEXITCODE -ne 0) {
 	throw "gcc failed with exit code $LASTEXITCODE"
 }
