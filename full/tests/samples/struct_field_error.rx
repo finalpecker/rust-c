@@ -1,0 +1,8 @@
+struct Point {
+    x: i64,
+}
+
+fn main() -> i64 {
+    let p = Point { x: 3 };
+    p.y
+}

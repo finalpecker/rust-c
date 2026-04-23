@@ -17,10 +17,11 @@ directory is the place where the production-oriented compiler will evolve.
 - `loop { ... }` expressions
 - `break` and `continue` statements in loops
 - `for <name> in <start>..<end> { ... }` range loops
+- Named `struct` definitions and field access
 - Blocks and block expressions
 - Function definitions and function calls
 - `return` statements
-- Static type checking for `i64`, `bool`, and `()`
+- Static type checking for `i64`, `bool`, `()`, and named struct types
 
 ## Target Scope
 
@@ -71,6 +72,7 @@ The suite includes:
 - Boolean logic and comparisons
 - Mutable state and loops
 - Loop control with `break` / `continue`
+- Named struct construction and field projection
 - Recursive calls
 - Block expressions and shadowing
 - Negative cases for semantic errors

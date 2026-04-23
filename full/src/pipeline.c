@@ -48,19 +48,29 @@ typedef enum {
     TYPE_UNIT,
     TYPE_I64,
     TYPE_BOOL,
+    TYPE_STRUCT,
 } TypeKind;
 
 typedef struct {
     TypeKind kind;
+    char *name;
+    int struct_index;
 } Type;
 
-static Type type_invalid(void) { return (Type){ TYPE_INVALID }; }
-static Type type_unit(void) { return (Type){ TYPE_UNIT }; }
-static Type type_i64(void) { return (Type){ TYPE_I64 }; }
-static Type type_bool(void) { return (Type){ TYPE_BOOL }; }
+static Type type_invalid(void) { return (Type){ TYPE_INVALID, NULL, -1 }; }
+static Type type_unit(void) { return (Type){ TYPE_UNIT, NULL, -1 }; }
+static Type type_i64(void) { return (Type){ TYPE_I64, NULL, -1 }; }
+static Type type_bool(void) { return (Type){ TYPE_BOOL, NULL, -1 }; }
+static Type type_struct(char *name) { return (Type){ TYPE_STRUCT, name, -1 }; }
 
 static bool type_equals(Type a, Type b) {
-    return a.kind == b.kind;
+    if (a.kind != b.kind) {
+        return false;
+    }
+    if (a.kind == TYPE_STRUCT) {
+        return a.struct_index >= 0 && a.struct_index == b.struct_index;
+    }
+    return true;
 }
 
 static const char *type_name(Type t) {
@@ -68,6 +78,7 @@ static const char *type_name(Type t) {
     case TYPE_UNIT: return "()";
     case TYPE_I64: return "i64";
     case TYPE_BOOL: return "bool";
+    case TYPE_STRUCT: return t.name ? t.name : "<struct>";
     default: return "<invalid>";
     }
 }
@@ -86,6 +97,7 @@ typedef enum {
     TOK_RETURN,
     TOK_BREAK,
     TOK_CONTINUE,
+    TOK_STRUCT,
     TOK_FOR,
     TOK_IN,
     TOK_IF,
@@ -118,6 +130,7 @@ typedef enum {
     TOK_ANDAND,
     TOK_OROR,
     TOK_DOTDOT,
+    TOK_DOT,
     TOK_ERROR,
 } TokenKind;
 
@@ -230,6 +243,7 @@ static Token lex_next(Lexer *lex) {
         else if (strcmp(text, "return") == 0) token.kind = TOK_RETURN;
         else if (strcmp(text, "break") == 0) token.kind = TOK_BREAK;
         else if (strcmp(text, "continue") == 0) token.kind = TOK_CONTINUE;
+        else if (strcmp(text, "struct") == 0) token.kind = TOK_STRUCT;
         else if (strcmp(text, "for") == 0) token.kind = TOK_FOR;
         else if (strcmp(text, "in") == 0) token.kind = TOK_IN;
         else if (strcmp(text, "if") == 0) token.kind = TOK_IF;
@@ -294,6 +308,10 @@ static Token lex_next(Lexer *lex) {
         lexer_advance(lex);
         return token_make(TOK_DOTDOT, line, col);
     }
+    if (ch == '.') {
+        lexer_advance(lex);
+        return token_make(TOK_DOT, line, col);
+    }
 
     /* Single-character punctuation and operators. */
     lexer_advance(lex);
@@ -329,6 +347,8 @@ typedef struct Expr Expr;
 typedef struct Stmt Stmt;
 typedef struct Block Block;
 typedef struct Param Param;
+typedef struct StructField StructField;
+typedef struct StructDef StructDef;
 typedef struct Function Function;
 typedef struct Program Program;
 
@@ -344,6 +364,8 @@ typedef enum {
     EXPR_IF,
     EXPR_WHILE,
     EXPR_LOOP,
+    EXPR_STRUCT_LITERAL,
+    EXPR_FIELD,
     EXPR_BLOCK,
 } ExprKind;
 
@@ -411,6 +433,19 @@ struct Expr {
             int fn_index;
         } call;
         struct {
+            char *type_name;
+            StructDef *struct_def;
+            char **field_names;
+            Expr **field_values;
+            int *field_indices;
+            size_t field_count;
+        } struct_lit;
+        struct {
+            Expr *base;
+            char *field_name;
+            int field_index;
+        } field_access;
+        struct {
             Expr *cond;
             Block *then_block;
             Block *else_block;
@@ -477,6 +512,19 @@ struct Param {
     int slot;
 };
 
+struct StructField {
+    char *name;
+    Type type;
+};
+
+struct StructDef {
+    char *name;
+    StructField *fields;
+    size_t field_count;
+    size_t field_cap;
+    int index;
+};
+
 struct Function {
     char *name;
     Param *params;
@@ -491,6 +539,9 @@ struct Function {
 };
 
 struct Program {
+    StructDef **structs;
+    size_t struct_count;
+    size_t struct_cap;
     Function **functions;
     size_t function_count;
     size_t function_cap;
@@ -538,6 +589,24 @@ static Program *program_new(void) {
     return program;
 }
 
+static StructDef *struct_def_new(int line, int col) {
+    (void)line;
+    (void)col;
+    StructDef *def = (StructDef *)xmalloc(sizeof(StructDef));
+    memset(def, 0, sizeof(StructDef));
+    def->index = -1;
+    return def;
+}
+
+static void struct_def_push_field(StructDef *def, StructField field) {
+    if (def->field_count == def->field_cap) {
+        size_t new_cap = def->field_cap == 0 ? 8 : def->field_cap * 2;
+        def->fields = (StructField *)xrealloc(def->fields, new_cap * sizeof(StructField));
+        def->field_cap = new_cap;
+    }
+    def->fields[def->field_count++] = field;
+}
+
 static void block_push_stmt(Block *block, Stmt *stmt) {
     if (block->stmt_count == block->stmt_cap) {
         size_t new_cap = block->stmt_cap == 0 ? 8 : block->stmt_cap * 2;
@@ -563,6 +632,15 @@ static void program_push_function(Program *program, Function *fn) {
         program->function_cap = new_cap;
     }
     program->functions[program->function_count++] = fn;
+}
+
+static void program_push_struct(Program *program, StructDef *def) {
+    if (program->struct_count == program->struct_cap) {
+        size_t new_cap = program->struct_cap == 0 ? 8 : program->struct_cap * 2;
+        program->structs = (StructDef **)xrealloc(program->structs, new_cap * sizeof(StructDef *));
+        program->struct_cap = new_cap;
+    }
+    program->structs[program->struct_count++] = def;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -618,12 +696,97 @@ static Type parse_type(Parser *p) {
         parser_expect(p, TOK_RPAREN, "expected ')' after '('");
         return type_unit();
     }
+    if (p->current.kind == TOK_IDENT) {
+        char *name = str_dup_c(p->current.text);
+        parser_advance(p);
+        return type_struct(name);
+    }
     FATAL("expected type name at %d:%d", p->current.line, p->current.col);
     return type_invalid();
 }
 
 static Expr *parse_expr(Parser *p);
 static Block *parse_block(Parser *p);
+
+static Expr *parse_postfix(Parser *p, Expr *expr) {
+    for (;;) {
+        if (parser_match(p, TOK_LPAREN)) {
+            Expr *call = expr_new(EXPR_CALL, expr->line, expr->col);
+            if (expr->kind != EXPR_VAR) {
+                FATAL("call target must be a function name at %d:%d", expr->line, expr->col);
+            }
+            call->as.call.name = expr->as.var.name;
+            call->as.call.args = NULL;
+            call->as.call.argc = 0;
+            call->as.call.fn_index = -1;
+            if (!parser_match(p, TOK_RPAREN)) {
+                for (;;) {
+                    Expr *arg = parse_expr(p);
+                    call->as.call.args = (Expr **)xrealloc(
+                        call->as.call.args,
+                        (call->as.call.argc + 1) * sizeof(Expr *));
+                    call->as.call.args[call->as.call.argc++] = arg;
+                    if (parser_match(p, TOK_COMMA)) {
+                        continue;
+                    }
+                    parser_expect(p, TOK_RPAREN, "expected ')' after call arguments");
+                    break;
+                }
+            }
+            expr = call;
+            continue;
+        }
+        if (expr->kind == EXPR_VAR && parser_match(p, TOK_LBRACE)) {
+            Expr *literal = expr_new(EXPR_STRUCT_LITERAL, expr->line, expr->col);
+            literal->as.struct_lit.type_name = expr->as.var.name;
+            literal->as.struct_lit.field_names = NULL;
+            literal->as.struct_lit.field_values = NULL;
+            literal->as.struct_lit.field_indices = NULL;
+            literal->as.struct_lit.field_count = 0;
+            if (!parser_match(p, TOK_RBRACE)) {
+                for (;;) {
+                    if (p->current.kind != TOK_IDENT) {
+                        FATAL("expected field name in struct literal at %d:%d", p->current.line, p->current.col);
+                    }
+                    char *field_name = str_dup_c(p->current.text);
+                    parser_advance(p);
+                    parser_expect(p, TOK_COLON, "expected ':' after field name");
+                    Expr *field_value = parse_expr(p);
+                    literal->as.struct_lit.field_names = (char **)xrealloc(
+                        literal->as.struct_lit.field_names,
+                        (literal->as.struct_lit.field_count + 1) * sizeof(char *));
+                    literal->as.struct_lit.field_values = (Expr **)xrealloc(
+                        literal->as.struct_lit.field_values,
+                        (literal->as.struct_lit.field_count + 1) * sizeof(Expr *));
+                    literal->as.struct_lit.field_names[literal->as.struct_lit.field_count] = field_name;
+                    literal->as.struct_lit.field_values[literal->as.struct_lit.field_count] = field_value;
+                    literal->as.struct_lit.field_count++;
+                    if (parser_match(p, TOK_COMMA)) {
+                        continue;
+                    }
+                    parser_expect(p, TOK_RBRACE, "expected '}' after struct literal");
+                    break;
+                }
+            }
+            expr = literal;
+            continue;
+        }
+        if (parser_match(p, TOK_DOT)) {
+            if (p->current.kind != TOK_IDENT) {
+                FATAL("expected field name after '.' at %d:%d", p->current.line, p->current.col);
+            }
+            Expr *field = expr_new(EXPR_FIELD, expr->line, expr->col);
+            field->as.field_access.base = expr;
+            field->as.field_access.field_name = str_dup_c(p->current.text);
+            field->as.field_access.field_index = -1;
+            parser_advance(p);
+            expr = field;
+            continue;
+        }
+        break;
+    }
+    return expr;
+}
 
 static Expr *parse_primary(Parser *p) {
     Token tok = p->current;
@@ -702,32 +865,10 @@ static Expr *parse_primary(Parser *p) {
     if (p->current.kind == TOK_IDENT) {
         char *name = str_dup_c(p->current.text);
         parser_advance(p);
-        if (parser_match(p, TOK_LPAREN)) {
-            Expr *call = expr_new(EXPR_CALL, tok.line, tok.col);
-            call->as.call.name = name;
-            call->as.call.args = NULL;
-            call->as.call.argc = 0;
-            call->as.call.fn_index = -1;
-            if (!parser_match(p, TOK_RPAREN)) {
-                for (;;) {
-                    Expr *arg = parse_expr(p);
-                    call->as.call.args = (Expr **)xrealloc(
-                        call->as.call.args,
-                        (call->as.call.argc + 1) * sizeof(Expr *));
-                    call->as.call.args[call->as.call.argc++] = arg;
-                    if (parser_match(p, TOK_COMMA)) {
-                        continue;
-                    }
-                    parser_expect(p, TOK_RPAREN, "expected ')' after call arguments");
-                    break;
-                }
-            }
-            return call;
-        }
         Expr *expr = expr_new(EXPR_VAR, tok.line, tok.col);
         expr->as.var.name = name;
         expr->as.var.slot = -1;
-        return expr;
+        return parse_postfix(p, expr);
     }
 
     FATAL("unexpected token at %d:%d", p->current.line, p->current.col);
@@ -953,6 +1094,38 @@ static Stmt *parse_for_stmt(Parser *p) {
     return stmt;
 }
 
+static StructDef *parse_struct_def(Parser *p) {
+    Token tok = p->current;
+    parser_expect(p, TOK_STRUCT, "expected 'struct'");
+    if (p->current.kind != TOK_IDENT) {
+        FATAL("expected struct name after 'struct' at %d:%d", p->current.line, p->current.col);
+    }
+
+    StructDef *def = struct_def_new(tok.line, tok.col);
+    def->name = str_dup_c(p->current.text);
+    parser_advance(p);
+    parser_expect(p, TOK_LBRACE, "expected '{' after struct name");
+
+    while (p->current.kind != TOK_RBRACE) {
+        if (p->current.kind != TOK_IDENT) {
+            FATAL("expected field name in struct definition at %d:%d", p->current.line, p->current.col);
+        }
+        StructField field;
+        field.name = str_dup_c(p->current.text);
+        parser_advance(p);
+        parser_expect(p, TOK_COLON, "expected ':' after field name");
+        field.type = parse_type(p);
+        struct_def_push_field(def, field);
+        if (parser_match(p, TOK_COMMA)) {
+            continue;
+        }
+        break;
+    }
+
+    parser_expect(p, TOK_RBRACE, "expected '}' after struct definition");
+    return def;
+}
+
 static Block *parse_block(Parser *p) {
     Token open = p->current;
     parser_expect(p, TOK_LBRACE, "expected '{'");
@@ -1064,6 +1237,10 @@ static Program *parse_program(const char *source) {
 
     Program *program = program_new();
     while (p.current.kind != TOK_EOF) {
+        if (p.current.kind == TOK_STRUCT) {
+            program_push_struct(program, parse_struct_def(&p));
+            continue;
+        }
         program_push_function(program, parse_function(&p));
     }
     return program;
@@ -1172,6 +1349,45 @@ static Function *program_find_function(Program *program, const char *name) {
     return NULL;
 }
 
+static StructDef *program_find_struct(Program *program, const char *name) {
+    for (size_t i = 0; i < program->struct_count; ++i) {
+        if (strcmp(program->structs[i]->name, name) == 0) {
+            return program->structs[i];
+        }
+    }
+    return NULL;
+}
+
+static int struct_find_field_index(StructDef *def, const char *name) {
+    for (size_t i = 0; i < def->field_count; ++i) {
+        if (strcmp(def->fields[i].name, name) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static Type sema_resolve_type(Sema *s, Type type, int line, int col) {
+    if (type.kind != TYPE_STRUCT) {
+        return type;
+    }
+    if (!type.name) {
+        FATAL("invalid struct type at %d:%d", line, col);
+    }
+    StructDef *def = program_find_struct(s->program, type.name);
+    if (!def) {
+        FATAL("unknown struct type '%s' at %d:%d", type.name, line, col);
+    }
+    type.struct_index = def->index;
+    return type;
+}
+
+static void sema_resolve_struct_fields(Sema *s, StructDef *def) {
+    for (size_t i = 0; i < def->field_count; ++i) {
+        def->fields[i].type = sema_resolve_type(s, def->fields[i].type, 0, 0);
+    }
+}
+
 static void sema_expect_type(Type actual, Type expected, int line, int col, const char *what) {
     if (!type_equals(actual, expected)) {
         FATAL("type mismatch for %s at %d:%d: expected %s but found %s",
@@ -1197,6 +1413,53 @@ static Type sema_check_call(Sema *s, Expr *expr) {
         sema_expect_type(actual, fn->params[i].type, expr->as.call.args[i]->line, expr->as.call.args[i]->col, "call argument");
     }
     expr->type = fn->return_type;
+    return expr->type;
+}
+
+static Type sema_check_struct_literal(Sema *s, Expr *expr) {
+    StructDef *def = program_find_struct(s->program, expr->as.struct_lit.type_name);
+    if (!def) {
+        FATAL("unknown struct '%s' at %d:%d", expr->as.struct_lit.type_name, expr->line, expr->col);
+    }
+    if (expr->as.struct_lit.field_count != def->field_count) {
+        FATAL("struct '%s' expects %zu fields but got %zu at %d:%d",
+              def->name, def->field_count, expr->as.struct_lit.field_count, expr->line, expr->col);
+    }
+    expr->as.struct_lit.struct_def = def;
+    if (!expr->as.struct_lit.field_indices) {
+        expr->as.struct_lit.field_indices = (int *)xmalloc(expr->as.struct_lit.field_count * sizeof(int));
+    }
+    for (size_t i = 0; i < expr->as.struct_lit.field_count; ++i) {
+        int field_index = struct_find_field_index(def, expr->as.struct_lit.field_names[i]);
+        if (field_index < 0) {
+            FATAL("unknown field '%s' on struct '%s' at %d:%d",
+                  expr->as.struct_lit.field_names[i], def->name, expr->line, expr->col);
+        }
+        expr->as.struct_lit.field_indices[i] = field_index;
+        Type actual = sema_check_expr(s, expr->as.struct_lit.field_values[i]);
+        sema_expect_type(actual, def->fields[field_index].type,
+                         expr->as.struct_lit.field_values[i]->line,
+                         expr->as.struct_lit.field_values[i]->col,
+                         "struct field");
+    }
+    expr->type = type_struct(def->name);
+    expr->type.struct_index = def->index;
+    return expr->type;
+}
+
+static Type sema_check_field_access(Sema *s, Expr *expr) {
+    Type base = sema_check_expr(s, expr->as.field_access.base);
+    if (base.kind != TYPE_STRUCT || base.struct_index < 0) {
+        FATAL("field access requires a struct value at %d:%d", expr->line, expr->col);
+    }
+    StructDef *def = s->program->structs[base.struct_index];
+    int field_index = struct_find_field_index(def, expr->as.field_access.field_name);
+    if (field_index < 0) {
+        FATAL("unknown field '%s' on struct '%s' at %d:%d",
+              expr->as.field_access.field_name, def->name, expr->line, expr->col);
+    }
+    expr->as.field_access.field_index = field_index;
+    expr->type = def->fields[field_index].type;
     return expr->type;
 }
 
@@ -1293,6 +1556,10 @@ static Type sema_check_expr(Sema *s, Expr *expr) {
     }
     case EXPR_CALL:
         return sema_check_call(s, expr);
+    case EXPR_STRUCT_LITERAL:
+        return sema_check_struct_literal(s, expr);
+    case EXPR_FIELD:
+        return sema_check_field_access(s, expr);
     case EXPR_IF: {
         Type cond = sema_check_expr(s, expr->as.if_expr.cond);
         sema_expect_type(cond, type_bool(), expr->as.if_expr.cond->line, expr->as.if_expr.cond->col, "if condition");
@@ -1341,6 +1608,7 @@ static Type sema_check_stmt(Sema *s, Stmt *stmt, Type function_return_type) {
     case STMT_LET: {
         Type init_type = sema_check_expr(s, stmt->as.let_stmt.init);
         if (stmt->as.let_stmt.has_annotation) {
+            stmt->as.let_stmt.annotation = sema_resolve_type(s, stmt->as.let_stmt.annotation, stmt->line, stmt->col);
             sema_expect_type(init_type, stmt->as.let_stmt.annotation, stmt->line, stmt->col, "let binding");
             stmt->as.let_stmt.type = stmt->as.let_stmt.annotation;
         } else {
@@ -1433,6 +1701,21 @@ static void sema_check_function(Sema *s, Function *fn) {
 }
 
 static void sema_check_program(Program *program) {
+    for (size_t i = 0; i < program->struct_count; ++i) {
+        StructDef *def = program->structs[i];
+        if (program_find_struct(program, def->name) != def) {
+            FATAL("duplicate struct '%s' at %d:%d", def->name, 0, 0);
+        }
+        def->index = (int)i;
+    }
+
+    Sema type_sema;
+    memset(&type_sema, 0, sizeof(type_sema));
+    type_sema.program = program;
+    for (size_t i = 0; i < program->struct_count; ++i) {
+        sema_resolve_struct_fields(&type_sema, program->structs[i]);
+    }
+
     /* First build and validate the global function table. */
     for (size_t i = 0; i < program->function_count; ++i) {
         Function *fn = program->functions[i];
@@ -1440,6 +1723,10 @@ static void sema_check_program(Program *program) {
             FATAL("duplicate function '%s' at %d:%d", fn->name, fn->line, fn->col);
         }
         fn->index = (int)i;
+        fn->return_type = sema_resolve_type(&type_sema, fn->return_type, fn->line, fn->col);
+        for (size_t j = 0; j < fn->param_count; ++j) {
+            fn->params[j].type = sema_resolve_type(&type_sema, fn->params[j].type, fn->line, fn->col);
+        }
     }
 
     /* Then type-check each function body independently. */
@@ -1476,6 +1763,8 @@ typedef enum {
     OP_JUMP,
     OP_JUMP_IF_FALSE,
     OP_CALL,
+    OP_STRUCT_MAKE,
+    OP_STRUCT_GET,
     OP_RET,
 } OpCode;
 
@@ -1514,6 +1803,20 @@ typedef struct {
     int param_count;
     Type return_type;
 } BytecodeFunction;
+
+typedef struct {
+    int struct_index;
+    size_t field_count;
+    long long fields[];
+} StructObject;
+
+static StructObject *struct_object_from_value(long long value) {
+    return (StructObject *)(uintptr_t)value;
+}
+
+static long long struct_object_to_value(StructObject *object) {
+    return (long long)(uintptr_t)object;
+}
 
 typedef struct {
     BytecodeFunction *functions;
@@ -1738,6 +2041,30 @@ static size_t codegen_expr(Codegen *cg, Function *fn, BytecodeFunction *out, Exp
         return 1;
     case EXPR_CALL:
         return codegen_call(cg, fn, out, expr, loop_ctx);
+    case EXPR_STRUCT_LITERAL: {
+        StructDef *def = expr->as.struct_lit.struct_def;
+        if (!def) {
+            FATAL("internal codegen error: unresolved struct literal at %d:%d", expr->line, expr->col);
+        }
+        for (size_t field_index = 0; field_index < def->field_count; ++field_index) {
+            size_t literal_index = 0;
+            for (; literal_index < expr->as.struct_lit.field_count; ++literal_index) {
+                if (expr->as.struct_lit.field_indices[literal_index] == (int)field_index) {
+                    break;
+                }
+            }
+            if (literal_index == expr->as.struct_lit.field_count) {
+                FATAL("internal codegen error: missing struct field at %d:%d", expr->line, expr->col);
+            }
+            codegen_expr(cg, fn, out, expr->as.struct_lit.field_values[literal_index], loop_ctx);
+        }
+        instr_emit(&out->code, OP_STRUCT_MAKE, def->index, (int)def->field_count);
+        return 1;
+    }
+    case EXPR_FIELD:
+        codegen_expr(cg, fn, out, expr->as.field_access.base, loop_ctx);
+        instr_emit(&out->code, OP_STRUCT_GET, expr->as.field_access.field_index, 0);
+        return 1;
     case EXPR_IF: {
         codegen_expr(cg, fn, out, expr->as.if_expr.cond, loop_ctx);
         size_t jump_else = instr_emit(&out->code, OP_JUMP_IF_FALSE, 0, 0);
@@ -2049,6 +2376,31 @@ static long long vm_run(BytecodeProgram *program) {
             for (size_t i = (size_t)prev_sp + (size_t)argc; i < needed; ++i) {
                 vm.stack[i] = 0;
             }
+            break;
+        }
+        case OP_STRUCT_MAKE: {
+            int struct_index = (int)instr.arg;
+            int field_count = instr.aux;
+            StructObject *object = (StructObject *)xmalloc(sizeof(StructObject) + (size_t)field_count * sizeof(long long));
+            object->struct_index = struct_index;
+            object->field_count = (size_t)field_count;
+            for (int i = field_count - 1; i >= 0; --i) {
+                object->fields[(size_t)i] = vm_pop(&vm);
+            }
+            vm_push(&vm, struct_object_to_value(object));
+            break;
+        }
+        case OP_STRUCT_GET: {
+            int field_index = (int)instr.arg;
+            long long handle = vm_pop(&vm);
+            StructObject *object = struct_object_from_value(handle);
+            if (!object) {
+                FATAL("null struct access in runtime");
+            }
+            if (field_index < 0 || (size_t)field_index >= object->field_count) {
+                FATAL("struct field index out of range in runtime");
+            }
+            vm_push(&vm, object->fields[field_index]);
             break;
         }
         case OP_RET: {

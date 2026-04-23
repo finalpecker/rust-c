@@ -22,7 +22,8 @@ $successCases = @(
     @{ Name = 'nested_calls'; File = 'tests\samples\nested_calls.rx'; ExitCode = 20 },
     @{ Name = 'break_continue'; File = 'tests\samples\break_continue.rx'; ExitCode = 31 },
     @{ Name = 'for_loop'; File = 'tests\samples\for_loop.rx'; ExitCode = 7 },
-        @{ Name = 'loop_expr'; File = 'tests\samples\loop_expr.rx'; ExitCode = 12 }
+    @{ Name = 'loop_expr'; File = 'tests\samples\loop_expr.rx'; ExitCode = 12 },
+    @{ Name = 'struct_field'; File = 'tests\samples\struct_field.rx'; ExitCode = 7 }
 )
 
 $failureCases = @(
@@ -33,7 +34,8 @@ $failureCases = @(
     @{ Name = 'immutable_assignment'; File = 'tests\samples\immutable_assignment.rx' },
     @{ Name = 'break_outside_loop'; File = 'tests\samples\break_outside_loop.rx' },
     @{ Name = 'continue_outside_loop'; File = 'tests\samples\continue_outside_loop.rx' },
-    @{ Name = 'for_range_type_error'; File = 'tests\samples\for_range_type_error.rx' }
+    @{ Name = 'for_range_type_error'; File = 'tests\samples\for_range_type_error.rx' },
+    @{ Name = 'struct_field_error'; File = 'tests\samples\struct_field_error.rx' }
 )
 
 $failures = 0
