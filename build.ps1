@@ -1,13 +1,15 @@
+param(
+    [ValidateSet('teaching', 'full')]
+    [string]$Project = 'teaching'
+)
+
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$buildDir = Join-Path $root 'build'
-New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+$projectRoot = Join-Path $root $Project
 
-$mainSource = Join-Path $root 'src\main.c'
-$supportSource = Join-Path $root 'src\support.c'
-$compilerSource = Join-Path $root 'src\compiler.c'
-$output = Join-Path $buildDir 'mini-rustc.exe'
+if (-not (Test-Path $projectRoot)) {
+    throw "Project root not found: $projectRoot"
+}
 
-gcc -std=c11 -Wall -Wextra -Wpedantic -O2 $mainSource $supportSource $compilerSource -o $output
-Write-Host "Built $output"
+& (Join-Path $projectRoot 'build.ps1')

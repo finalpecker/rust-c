@@ -1,72 +1,34 @@
-# Mini Rust Compiler in C
+# rust-c Workspace
 
-This project implements a teaching-oriented Rust subset compiler in C.
-It is designed for compiler-principles education: the code is intentionally
-structured, commented, and split into clear phases.
+This workspace contains two separate Rust compiler tracks implemented in C:
 
-## What It Supports
+- `teaching/` is the frozen, educational subset compiler.
+- `full/` is the engineering track for the production-oriented compiler.
 
-- Integer and boolean literals
-- Immutable and mutable local bindings
-- Arithmetic, comparison, and boolean operators
-- `if` / `else` expressions
-- `while` expressions
-- `break` and `continue` statements in loops
-- Blocks and block expressions
-- Function definitions and function calls
-- `return` statements
-- Static type checking for `i64`, `bool`, and `()`
+Each track has its own build script, source tree, and test set.
 
-## What It Does Not Support
+## Version Policy
 
-This is not a full Rust compiler.
-It does not implement ownership, lifetimes, traits, structs, enums, generics,
-modules, pattern matching, references, or the borrow checker.
+- `versions/v1.0.0` captures the original teaching compiler baseline.
+- `versions/v1.1.0-dev1` captures the first modularized checkpoint.
+- New milestones should be committed in git and mirrored into a dedicated
+  version snapshot before the next major architectural change.
 
 ## Build
 
-On Windows with MinGW GCC:
+Build a specific track from the workspace root:
 
 ```powershell
-.\build.ps1
+.\build.ps1 -Project teaching
+.\build.ps1 -Project full
 ```
 
-The compiler binary is written to `build\mini-rustc.exe`.
+You can also build from inside a track directory if you want to work on it in
+isolation.
 
-## Run a Program
+## Repository Account
 
-```powershell
-.\build\mini-rustc.exe .\tests\samples\recursion.rx
-```
-
-The compiler executes the compiled bytecode and prints the `main` result.
-Successful runs exit with code `0`; semantic or runtime errors return a
-non-zero exit code.
-
-## Run the Test Suite
-
-```powershell
-.\tests\run-tests.ps1
-```
-
-The suite includes:
-
-- Arithmetic and precedence checks
-- Boolean logic and comparisons
-- Mutable state and loops
-- Loop control with `break` / `continue`
-- Recursive calls
-- Block expressions and shadowing
-- Negative cases for semantic errors
-
-## Notes for Teaching
-
-The code is organized to make the compiler pipeline easy to follow:
-
-1. Entry point in `src/main.c`
-2. Compiler core in `src/compiler.c`
-3. Public API declaration in `src/compiler.h`
-4. Compiler stages (lexer -> parser -> semantic analysis -> bytecode VM)
-
-That flow is deliberate so the project can be used to teach compiler structure
-without relying on an existing Rust compiler implementation.
+When configuring git links or GitHub remotes, use the currently authenticated
+GitHub account in your environment. If the environment does not expose that
+account, do not guess it; resolve it through the authenticated tooling before
+publishing links.
