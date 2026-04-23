@@ -1,0 +1,11 @@
+fn add(a: i64, b: i64) -> i64 {
+    a + b
+}
+
+fn mul_add(a: i64, b: i64, c: i64) -> i64 {
+    add(a, b) * c
+}
+
+fn main() -> i64 {
+    mul_add(2, 3, 4)
+}
