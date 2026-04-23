@@ -1,0 +1,11 @@
+build/
+*.exe
+*.obj
+*.o
+*.pdb
+*.ilk
+*.log
+*.tmp
+*.swp
+.vs/
+.vscode/*.code-workspace
