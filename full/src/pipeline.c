@@ -2708,8 +2708,6 @@ static size_t codegen_expr(Codegen *cg, Function *fn, BytecodeFunction *out, Exp
                 instr_emit(&out->code, OP_LOAD, expr->as.match_expr.temp_slot, 0);
                 instr_emit(&out->code, OP_ENUM_GET, arm->enum_index, arm->variant_index);
                 instr_emit(&out->code, OP_STORE, arm->binding_slot, 0);
-            } else {
-                instr_emit(&out->code, OP_POP, 0, 0);
             }
 
             codegen_expr(cg, fn, out, arm->body, loop_ctx);
