@@ -20,8 +20,8 @@
  * - return statements.
  *
  * Unsupported Rust features (intentional for a teaching compiler):
- * - Lifetimes, ownership, traits, structs, enums, generics, modules,
- *   pattern matching, arrays, references, and the borrow checker.
+ * - Lifetimes, ownership, traits, enums, generics, modules, arrays,
+ *   references, and the borrow checker.
  *
  * The implementation focuses on a rigorous, well-structured subset that is
  * suitable for compiler-principles teaching, not on full Rust compatibility.
@@ -48,13 +48,18 @@ typedef enum {
     TYPE_UNIT,
     TYPE_I64,
     TYPE_BOOL,
+    TYPE_TUPLE,
     TYPE_STRUCT,
     TYPE_ENUM,
     TYPE_REF,
 } TypeKind;
-typedef struct {
+typedef struct Type Type;
+struct Type {
     TypeKind kind;
     char *name;
+    Type *tuple_items;
+    size_t tuple_item_count;
+    size_t tuple_item_cap;
     int struct_index;
     int enum_index;
     TypeKind ref_target_kind;
@@ -62,14 +67,24 @@ typedef struct {
     int ref_target_struct_index;
     int ref_target_enum_index;
     bool ref_mut;
-} Type;
+};
 
-static Type type_invalid(void) { return (Type){ TYPE_INVALID, NULL, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
-static Type type_unit(void) { return (Type){ TYPE_UNIT, NULL, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
-static Type type_i64(void) { return (Type){ TYPE_I64, NULL, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
-static Type type_bool(void) { return (Type){ TYPE_BOOL, NULL, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
-static Type type_struct(char *name) { return (Type){ TYPE_STRUCT, name, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
-static Type type_enum(char *name) { return (Type){ TYPE_ENUM, name, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
+static Type type_invalid(void) { return (Type){ TYPE_INVALID, NULL, NULL, 0, 0, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
+static Type type_unit(void) { return (Type){ TYPE_UNIT, NULL, NULL, 0, 0, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
+static Type type_i64(void) { return (Type){ TYPE_I64, NULL, NULL, 0, 0, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
+static Type type_bool(void) { return (Type){ TYPE_BOOL, NULL, NULL, 0, 0, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
+static Type type_struct(char *name) { return (Type){ TYPE_STRUCT, name, NULL, 0, 0, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
+static Type type_tuple(void) { return (Type){ TYPE_TUPLE, NULL, NULL, 0, 0, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
+static Type type_enum(char *name) { return (Type){ TYPE_ENUM, name, NULL, 0, 0, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
+
+static void type_tuple_push(Type *type, Type item) {
+    if (type->tuple_item_count == type->tuple_item_cap) {
+        size_t new_cap = type->tuple_item_cap == 0 ? 4 : type->tuple_item_cap * 2;
+        type->tuple_items = (Type *)xrealloc(type->tuple_items, new_cap * sizeof(Type));
+        type->tuple_item_cap = new_cap;
+    }
+    type->tuple_items[type->tuple_item_count++] = item;
+}
 
 static Type type_ref(Type target, bool mut) {
     Type type = type_invalid();
@@ -113,6 +128,17 @@ static bool type_equals(Type a, Type b) {
     if (a.kind != b.kind) {
         return false;
     }
+    if (a.kind == TYPE_TUPLE) {
+        if (a.tuple_item_count != b.tuple_item_count) {
+            return false;
+        }
+        for (size_t i = 0; i < a.tuple_item_count; ++i) {
+            if (!type_equals(a.tuple_items[i], b.tuple_items[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
     if (a.kind == TYPE_STRUCT) {
         return a.struct_index >= 0 && a.struct_index == b.struct_index;
     }
@@ -141,6 +167,28 @@ static const char *type_name(Type t) {
     case TYPE_UNIT: return "()";
     case TYPE_I64: return "i64";
     case TYPE_BOOL: return "bool";
+    case TYPE_TUPLE: {
+        static char tuple_buffers[4][256];
+        char *buf = tuple_buffers[next_buf++ % 4];
+        size_t pos = 0;
+        buf[pos++] = '(';
+        for (size_t i = 0; i < t.tuple_item_count; ++i) {
+            const char *part = type_name(t.tuple_items[i]);
+            size_t len = strlen(part);
+            if (pos + len + 3 >= 256) {
+                break;
+            }
+            if (i > 0) {
+                buf[pos++] = ',';
+                buf[pos++] = ' ';
+            }
+            memcpy(buf + pos, part, len);
+            pos += len;
+        }
+        buf[pos++] = ')';
+        buf[pos] = '\0';
+        return buf;
+    }
     case TYPE_STRUCT: return t.name ? t.name : "<struct>";
     case TYPE_ENUM: return t.name ? t.name : "<enum>";
     case TYPE_REF: {
@@ -481,6 +529,7 @@ typedef enum {
     EXPR_IF,
     EXPR_WHILE,
     EXPR_LOOP,
+    EXPR_TUPLE_LITERAL,
     EXPR_STRUCT_LITERAL,
     EXPR_ENUM_VARIANT,
     EXPR_MATCH,
@@ -563,6 +612,11 @@ struct Expr {
             size_t field_count;
         } struct_lit;
         struct {
+            Expr **items;
+            size_t item_count;
+            size_t item_cap;
+        } tuple_lit;
+        struct {
             char *type_name;
             char *variant_name;
             Expr **payloads;
@@ -581,6 +635,7 @@ struct Expr {
             Expr *base;
             char *field_name;
             int field_index;
+            bool is_tuple_index;
         } field_access;
         struct {
             Expr *cond;
@@ -774,6 +829,15 @@ static void expr_enum_variant_push_payload(Expr *expr, Expr *payload) {
     expr->as.enum_variant.payloads[expr->as.enum_variant.payload_count++] = payload;
 }
 
+static void expr_tuple_push_item(Expr *expr, Expr *item) {
+    if (expr->as.tuple_lit.item_count == expr->as.tuple_lit.item_cap) {
+        size_t new_cap = expr->as.tuple_lit.item_cap == 0 ? 4 : expr->as.tuple_lit.item_cap * 2;
+        expr->as.tuple_lit.items = (Expr **)xrealloc(expr->as.tuple_lit.items, new_cap * sizeof(Expr *));
+        expr->as.tuple_lit.item_cap = new_cap;
+    }
+    expr->as.tuple_lit.items[expr->as.tuple_lit.item_count++] = item;
+}
+
 static void match_arm_push_binding(MatchArm *arm, char *name) {
     if (arm->binding_count == arm->binding_cap) {
         size_t new_cap = arm->binding_cap == 0 ? 4 : arm->binding_cap * 2;
@@ -922,8 +986,27 @@ static Type parse_type(Parser *p) {
         return type_bool();
     }
     if (parser_match(p, TOK_LPAREN)) {
-        parser_expect(p, TOK_RPAREN, "expected ')' after '('");
-        return type_unit();
+        if (parser_match(p, TOK_RPAREN)) {
+            return type_unit();
+        }
+        Type first = parse_type(p);
+        if (parser_match(p, TOK_COMMA)) {
+            Type tuple = type_tuple();
+            type_tuple_push(&tuple, first);
+            if (!parser_match(p, TOK_RPAREN)) {
+                for (;;) {
+                    type_tuple_push(&tuple, parse_type(p));
+                    if (parser_match(p, TOK_COMMA)) {
+                        continue;
+                    }
+                    parser_expect(p, TOK_RPAREN, "expected ')' after tuple type");
+                    break;
+                }
+            }
+            return tuple;
+        }
+        parser_expect(p, TOK_RPAREN, "expected ')' after type");
+        return first;
     }
     if (p->current.kind == TOK_IDENT) {
         char *name = str_dup_c(p->current.text);
@@ -1067,14 +1150,21 @@ static Expr *parse_postfix(Parser *p, Expr *expr) {
             continue;
         }
         if (parser_match(p, TOK_DOT)) {
-            if (p->current.kind != TOK_IDENT) {
-                FATAL("expected field name after '.' at %d:%d", p->current.line, p->current.col);
-            }
             Expr *field = expr_new(EXPR_FIELD, expr->line, expr->col);
             field->as.field_access.base = expr;
-            field->as.field_access.field_name = str_dup_c(p->current.text);
             field->as.field_access.field_index = -1;
-            parser_advance(p);
+            field->as.field_access.is_tuple_index = false;
+            if (p->current.kind == TOK_IDENT) {
+                field->as.field_access.field_name = str_dup_c(p->current.text);
+                parser_advance(p);
+            } else if (p->current.kind == TOK_INT) {
+                field->as.field_access.is_tuple_index = true;
+                field->as.field_access.field_index = (int)p->current.int_value;
+                field->as.field_access.field_name = NULL;
+                parser_advance(p);
+            } else {
+                FATAL("expected field name or tuple index after '.' at %d:%d", p->current.line, p->current.col);
+            }
             expr = field;
             continue;
         }
@@ -1111,6 +1201,24 @@ static Expr *parse_primary(Parser *p) {
             return expr;
         }
         Expr *expr = parse_expr(p);
+        if (parser_match(p, TOK_COMMA)) {
+            Expr *tuple = expr_new(EXPR_TUPLE_LITERAL, tok.line, tok.col);
+            tuple->as.tuple_lit.items = NULL;
+            tuple->as.tuple_lit.item_count = 0;
+            tuple->as.tuple_lit.item_cap = 0;
+            expr_tuple_push_item(tuple, expr);
+            if (!parser_match(p, TOK_RPAREN)) {
+                for (;;) {
+                    expr_tuple_push_item(tuple, parse_expr(p));
+                    if (parser_match(p, TOK_COMMA)) {
+                        continue;
+                    }
+                    parser_expect(p, TOK_RPAREN, "expected ')' after tuple literal");
+                    break;
+                }
+            }
+            return tuple;
+        }
         parser_expect(p, TOK_RPAREN, "expected ')' after expression");
         return expr;
     }
@@ -1839,6 +1947,12 @@ static Type sema_resolve_type(Sema *s, Type type, int line, int col) {
         }
         return type;
     }
+    if (type.kind == TYPE_TUPLE) {
+        for (size_t i = 0; i < type.tuple_item_count; ++i) {
+            type.tuple_items[i] = sema_resolve_type(s, type.tuple_items[i], line, col);
+        }
+        return type;
+    }
     if (type.kind != TYPE_STRUCT && type.kind != TYPE_ENUM) {
         return type;
     }
@@ -1972,6 +2086,16 @@ static Type sema_check_struct_literal(Sema *s, Expr *expr) {
     return expr->type;
 }
 
+static Type sema_check_tuple_literal(Sema *s, Expr *expr) {
+    Type tuple = type_tuple();
+    for (size_t i = 0; i < expr->as.tuple_lit.item_count; ++i) {
+        Type item_type = sema_check_expr(s, expr->as.tuple_lit.items[i]);
+        type_tuple_push(&tuple, item_type);
+    }
+    expr->type = tuple;
+    return expr->type;
+}
+
 static Type sema_check_enum_variant(Sema *s, Expr *expr) {
     EnumDef *enm = program_find_enum(s->program, expr->as.enum_variant.type_name);
     if (!enm) {
@@ -2071,18 +2195,29 @@ static Type sema_check_match(Sema *s, Expr *expr) {
 
 static Type sema_check_field_access(Sema *s, Expr *expr) {
     Type base = sema_check_expr(s, expr->as.field_access.base);
-    if (base.kind != TYPE_STRUCT || base.struct_index < 0) {
-        FATAL("field access requires a struct value at %d:%d", expr->line, expr->col);
+    if (base.kind == TYPE_STRUCT) {
+        StructDef *def = s->program->structs[base.struct_index];
+        int field_index = struct_find_field_index(def, expr->as.field_access.field_name);
+        if (field_index < 0) {
+            FATAL("unknown field '%s' on struct '%s' at %d:%d",
+                  expr->as.field_access.field_name, def->name, expr->line, expr->col);
+        }
+        expr->as.field_access.field_index = field_index;
+        expr->type = def->fields[field_index].type;
+        return expr->type;
     }
-    StructDef *def = s->program->structs[base.struct_index];
-    int field_index = struct_find_field_index(def, expr->as.field_access.field_name);
-    if (field_index < 0) {
-        FATAL("unknown field '%s' on struct '%s' at %d:%d",
-              expr->as.field_access.field_name, def->name, expr->line, expr->col);
+    if (base.kind == TYPE_TUPLE) {
+        if (!expr->as.field_access.is_tuple_index) {
+            FATAL("tuple field access requires a numeric index at %d:%d", expr->line, expr->col);
+        }
+        if (expr->as.field_access.field_index < 0 || (size_t)expr->as.field_access.field_index >= base.tuple_item_count) {
+            FATAL("tuple index out of bounds at %d:%d", expr->line, expr->col);
+        }
+        expr->type = base.tuple_items[expr->as.field_access.field_index];
+        return expr->type;
     }
-    expr->as.field_access.field_index = field_index;
-    expr->type = def->fields[field_index].type;
-    return expr->type;
+    FATAL("field access requires a struct value at %d:%d", expr->line, expr->col);
+    return type_invalid();
 }
 
 static Type sema_check_binary_arith(Sema *s, Expr *expr, Type expected) {
@@ -2209,6 +2344,8 @@ static Type sema_check_expr(Sema *s, Expr *expr) {
         return sema_check_call(s, expr);
     case EXPR_STRUCT_LITERAL:
         return sema_check_struct_literal(s, expr);
+    case EXPR_TUPLE_LITERAL:
+        return sema_check_tuple_literal(s, expr);
     case EXPR_ENUM_VARIANT:
         return sema_check_enum_variant(s, expr);
     case EXPR_MATCH:
@@ -2739,6 +2876,13 @@ static size_t codegen_expr(Codegen *cg, Function *fn, BytecodeFunction *out, Exp
             codegen_expr(cg, fn, out, expr->as.struct_lit.field_values[literal_index], loop_ctx);
         }
         instr_emit(&out->code, OP_STRUCT_MAKE, def->index, (int)def->field_count);
+        return 1;
+    }
+    case EXPR_TUPLE_LITERAL: {
+        for (size_t i = 0; i < expr->as.tuple_lit.item_count; ++i) {
+            codegen_expr(cg, fn, out, expr->as.tuple_lit.items[i], loop_ctx);
+        }
+        instr_emit(&out->code, OP_STRUCT_MAKE, -1, (int)expr->as.tuple_lit.item_count);
         return 1;
     }
     case EXPR_ENUM_VARIANT:
