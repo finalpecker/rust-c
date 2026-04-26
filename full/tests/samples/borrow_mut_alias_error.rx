@@ -1,0 +1,6 @@
+fn main() -> i64 {
+    let mut x = 1;
+    let a = &x;
+    let b = &mut x;
+    0
+}

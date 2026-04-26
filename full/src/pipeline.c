@@ -49,19 +49,53 @@ typedef enum {
     TYPE_I64,
     TYPE_BOOL,
     TYPE_STRUCT,
+    TYPE_REF,
 } TypeKind;
 
 typedef struct {
     TypeKind kind;
     char *name;
     int struct_index;
+    TypeKind ref_target_kind;
+    char *ref_target_name;
+    int ref_target_struct_index;
+    bool ref_mut;
 } Type;
 
-static Type type_invalid(void) { return (Type){ TYPE_INVALID, NULL, -1 }; }
-static Type type_unit(void) { return (Type){ TYPE_UNIT, NULL, -1 }; }
-static Type type_i64(void) { return (Type){ TYPE_I64, NULL, -1 }; }
-static Type type_bool(void) { return (Type){ TYPE_BOOL, NULL, -1 }; }
-static Type type_struct(char *name) { return (Type){ TYPE_STRUCT, name, -1 }; }
+static Type type_invalid(void) { return (Type){ TYPE_INVALID, NULL, -1, TYPE_INVALID, NULL, -1, false }; }
+static Type type_unit(void) { return (Type){ TYPE_UNIT, NULL, -1, TYPE_INVALID, NULL, -1, false }; }
+static Type type_i64(void) { return (Type){ TYPE_I64, NULL, -1, TYPE_INVALID, NULL, -1, false }; }
+static Type type_bool(void) { return (Type){ TYPE_BOOL, NULL, -1, TYPE_INVALID, NULL, -1, false }; }
+static Type type_struct(char *name) { return (Type){ TYPE_STRUCT, name, -1, TYPE_INVALID, NULL, -1, false }; }
+static Type type_ref(Type target, bool mut) {
+    Type type = type_invalid();
+    type.kind = TYPE_REF;
+    type.ref_target_kind = target.kind;
+    if (target.kind == TYPE_STRUCT) {
+        type.ref_target_name = target.name;
+        type.ref_target_struct_index = target.struct_index;
+    }
+    type.ref_mut = mut;
+    return type;
+}
+
+static Type type_deref(Type ref_type) {
+    if (ref_type.kind != TYPE_REF) {
+        return type_invalid();
+    }
+    switch (ref_type.ref_target_kind) {
+    case TYPE_I64: return type_i64();
+    case TYPE_BOOL: return type_bool();
+    case TYPE_UNIT: return type_unit();
+    case TYPE_STRUCT: {
+        Type t = type_struct(ref_type.ref_target_name);
+        t.struct_index = ref_type.ref_target_struct_index;
+        return t;
+    }
+    default:
+        return type_invalid();
+    }
+}
 
 static bool type_equals(Type a, Type b) {
     if (a.kind != b.kind) {
@@ -70,15 +104,39 @@ static bool type_equals(Type a, Type b) {
     if (a.kind == TYPE_STRUCT) {
         return a.struct_index >= 0 && a.struct_index == b.struct_index;
     }
+    if (a.kind == TYPE_REF) {
+        if (a.ref_mut != b.ref_mut || a.ref_target_kind != b.ref_target_kind) {
+            return false;
+        }
+        if (a.ref_target_kind == TYPE_STRUCT) {
+            return a.ref_target_struct_index >= 0 && a.ref_target_struct_index == b.ref_target_struct_index;
+        }
+        return true;
+    }
     return true;
 }
 
 static const char *type_name(Type t) {
+    static char buffers[4][64];
+    static int next_buf = 0;
     switch (t.kind) {
     case TYPE_UNIT: return "()";
     case TYPE_I64: return "i64";
     case TYPE_BOOL: return "bool";
     case TYPE_STRUCT: return t.name ? t.name : "<struct>";
+    case TYPE_REF: {
+        char *buf = buffers[next_buf++ % 4];
+        const char *target = "<invalid>";
+        switch (t.ref_target_kind) {
+        case TYPE_I64: target = "i64"; break;
+        case TYPE_BOOL: target = "bool"; break;
+        case TYPE_UNIT: target = "()"; break;
+        case TYPE_STRUCT: target = t.ref_target_name ? t.ref_target_name : "<struct>"; break;
+        default: break;
+        }
+        snprintf(buf, 64, t.ref_mut ? "&mut %s" : "&%s", target);
+        return buf;
+    }
     default: return "<invalid>";
     }
 }
@@ -127,6 +185,7 @@ typedef enum {
     TOK_LE,
     TOK_GT,
     TOK_GE,
+    TOK_AND,
     TOK_ANDAND,
     TOK_OROR,
     TOK_DOTDOT,
@@ -298,6 +357,10 @@ static Token lex_next(Lexer *lex) {
         lexer_advance(lex);
         return token_make(TOK_ANDAND, line, col);
     }
+    if (ch == '&') {
+        lexer_advance(lex);
+        return token_make(TOK_AND, line, col);
+    }
     if (ch == '|' && lexer_peek_next(lex) == '|') {
         lexer_advance(lex);
         lexer_advance(lex);
@@ -372,6 +435,9 @@ typedef enum {
 typedef enum {
     UNARY_NEG,
     UNARY_NOT,
+    UNARY_REF,
+    UNARY_REF_MUT,
+    UNARY_DEREF,
 } UnaryKind;
 
 typedef enum {
@@ -684,6 +750,11 @@ static bool token_is_ident(const Token *tok, const char *name) {
 }
 
 static Type parse_type(Parser *p) {
+    if (parser_match(p, TOK_AND)) {
+        bool mut = parser_match(p, TOK_MUT);
+        Type target = parse_type(p);
+        return type_ref(target, mut);
+    }
     if (token_is_ident(&p->current, "i64")) {
         parser_advance(p);
         return type_i64();
@@ -877,6 +948,12 @@ static Expr *parse_primary(Parser *p) {
 
 static Expr *parse_unary(Parser *p) {
     Token tok = p->current;
+    if (parser_match(p, TOK_AND)) {
+        Expr *expr = expr_new(EXPR_UNARY, tok.line, tok.col);
+        expr->as.unary.op = parser_match(p, TOK_MUT) ? UNARY_REF_MUT : UNARY_REF;
+        expr->as.unary.operand = parse_unary(p);
+        return expr;
+    }
     if (parser_match(p, TOK_MINUS)) {
         Expr *expr = expr_new(EXPR_UNARY, tok.line, tok.col);
         expr->as.unary.op = UNARY_NEG;
@@ -886,6 +963,12 @@ static Expr *parse_unary(Parser *p) {
     if (parser_match(p, TOK_BANG)) {
         Expr *expr = expr_new(EXPR_UNARY, tok.line, tok.col);
         expr->as.unary.op = UNARY_NOT;
+        expr->as.unary.operand = parse_unary(p);
+        return expr;
+    }
+    if (parser_match(p, TOK_STAR)) {
+        Expr *expr = expr_new(EXPR_UNARY, tok.line, tok.col);
+        expr->as.unary.op = UNARY_DEREF;
         expr->as.unary.operand = parse_unary(p);
         return expr;
     }
@@ -1263,6 +1346,15 @@ typedef struct {
     size_t cap;
 } SymbolVec;
 
+typedef struct {
+    int *immut_slots;
+    size_t immut_len;
+    size_t immut_cap;
+    int *mut_slots;
+    size_t mut_len;
+    size_t mut_cap;
+} BorrowScope;
+
 static void symbol_vec_init(SymbolVec *vec) {
     vec->items = NULL;
     vec->len = 0;
@@ -1280,24 +1372,59 @@ static void symbol_vec_push(SymbolVec *vec, Symbol item) {
 
 typedef struct {
     SymbolVec scopes[64];
+    BorrowScope borrow_scopes[64];
     int depth;
     int next_slot;
     int loop_depth;
     Function *current_fn;
     Program *program;
+    int immut_borrow_count[4096];
+    bool mut_borrowed[4096];
 } Sema;
+
+static void borrow_scope_push_immut(BorrowScope *scope, int slot) {
+    if (scope->immut_len == scope->immut_cap) {
+        size_t new_cap = scope->immut_cap == 0 ? 8 : scope->immut_cap * 2;
+        scope->immut_slots = (int *)xrealloc(scope->immut_slots, new_cap * sizeof(int));
+        scope->immut_cap = new_cap;
+    }
+    scope->immut_slots[scope->immut_len++] = slot;
+}
+
+static void borrow_scope_push_mut(BorrowScope *scope, int slot) {
+    if (scope->mut_len == scope->mut_cap) {
+        size_t new_cap = scope->mut_cap == 0 ? 8 : scope->mut_cap * 2;
+        scope->mut_slots = (int *)xrealloc(scope->mut_slots, new_cap * sizeof(int));
+        scope->mut_cap = new_cap;
+    }
+    scope->mut_slots[scope->mut_len++] = slot;
+}
 
 static void sema_push_scope(Sema *s) {
     if (s->depth >= 64) {
         FATAL("scope nesting too deep");
     }
     symbol_vec_init(&s->scopes[s->depth]);
+    memset(&s->borrow_scopes[s->depth], 0, sizeof(BorrowScope));
     s->depth++;
 }
 
 static void sema_pop_scope(Sema *s) {
     if (s->depth <= 0) {
         FATAL("internal scope underflow");
+    }
+    BorrowScope *borrow = &s->borrow_scopes[s->depth - 1];
+    for (size_t i = 0; i < borrow->immut_len; ++i) {
+        int slot = borrow->immut_slots[i];
+        if (slot >= 0 && slot < 4096 && s->immut_borrow_count[slot] > 0) {
+            s->immut_borrow_count[slot]--;
+        }
+    }
+    for (size_t i = 0; i < borrow->mut_len; ++i) {
+        int slot = borrow->mut_slots[i];
+        if (slot >= 0 && slot < 4096) {
+            s->mut_borrowed[slot] = false;
+        }
     }
     s->depth--;
 }
@@ -1368,6 +1495,22 @@ static int struct_find_field_index(StructDef *def, const char *name) {
 }
 
 static Type sema_resolve_type(Sema *s, Type type, int line, int col) {
+    if (type.kind == TYPE_REF) {
+        if (type.ref_target_kind == TYPE_REF) {
+            FATAL("nested reference types are not supported yet at %d:%d", line, col);
+        }
+        if (type.ref_target_kind == TYPE_STRUCT) {
+            if (!type.ref_target_name) {
+                FATAL("invalid reference type at %d:%d", line, col);
+            }
+            StructDef *def = program_find_struct(s->program, type.ref_target_name);
+            if (!def) {
+                FATAL("unknown struct type '%s' at %d:%d", type.ref_target_name, line, col);
+            }
+            type.ref_target_struct_index = def->index;
+        }
+        return type;
+    }
     if (type.kind != TYPE_STRUCT) {
         return type;
     }
@@ -1386,6 +1529,45 @@ static void sema_resolve_struct_fields(Sema *s, StructDef *def) {
     for (size_t i = 0; i < def->field_count; ++i) {
         def->fields[i].type = sema_resolve_type(s, def->fields[i].type, 0, 0);
     }
+}
+
+static void sema_record_immut_borrow(Sema *s, int slot, int line, int col) {
+    if (slot < 0 || slot >= 4096) {
+        FATAL("too many local slots for borrow checker at %d:%d", line, col);
+    }
+    if (s->mut_borrowed[slot]) {
+        FATAL("cannot take immutable borrow while mutable borrow is active at %d:%d", line, col);
+    }
+    s->immut_borrow_count[slot]++;
+    borrow_scope_push_immut(&s->borrow_scopes[s->depth - 1], slot);
+}
+
+static void sema_record_mut_borrow(Sema *s, int slot, int line, int col) {
+    if (slot < 0 || slot >= 4096) {
+        FATAL("too many local slots for borrow checker at %d:%d", line, col);
+    }
+    if (s->mut_borrowed[slot] || s->immut_borrow_count[slot] > 0) {
+        FATAL("cannot take mutable borrow while another borrow is active at %d:%d", line, col);
+    }
+    s->mut_borrowed[slot] = true;
+    borrow_scope_push_mut(&s->borrow_scopes[s->depth - 1], slot);
+}
+
+static int sema_borrow_root_slot(Sema *s, Expr *expr, bool *root_mut) {
+    if (expr->kind == EXPR_VAR) {
+        Symbol *sym = sema_lookup(s, expr->as.var.name);
+        if (!sym) {
+            FATAL("unknown variable '%s' at %d:%d", expr->as.var.name, expr->line, expr->col);
+        }
+        if (root_mut) {
+            *root_mut = sym->mut;
+        }
+        return sym->slot;
+    }
+    if (expr->kind == EXPR_FIELD) {
+        return sema_borrow_root_slot(s, expr->as.field_access.base, root_mut);
+    }
+    return -1;
 }
 
 static void sema_expect_type(Type actual, Type expected, int line, int col, const char *what) {
@@ -1497,9 +1679,33 @@ static Type sema_check_expr(Sema *s, Expr *expr) {
         if (expr->as.unary.op == UNARY_NEG) {
             sema_expect_type(operand, type_i64(), expr->line, expr->col, "unary -");
             expr->type = type_i64();
-        } else {
+        } else if (expr->as.unary.op == UNARY_NOT) {
             sema_expect_type(operand, type_bool(), expr->line, expr->col, "unary !");
             expr->type = type_bool();
+        } else if (expr->as.unary.op == UNARY_DEREF) {
+            if (operand.kind != TYPE_REF) {
+                FATAL("dereference requires a reference operand at %d:%d", expr->line, expr->col);
+            }
+            expr->type = type_deref(operand);
+        } else {
+            bool root_mut = false;
+            int root_slot = sema_borrow_root_slot(s, expr->as.unary.operand, &root_mut);
+            if (root_slot < 0) {
+                FATAL("borrow target must be a variable or field at %d:%d", expr->line, expr->col);
+            }
+            if (operand.kind == TYPE_REF) {
+                FATAL("nested borrows are not supported yet at %d:%d", expr->line, expr->col);
+            }
+            if (expr->as.unary.op == UNARY_REF_MUT) {
+                if (!root_mut) {
+                    FATAL("cannot take mutable borrow of immutable binding at %d:%d", expr->line, expr->col);
+                }
+                sema_record_mut_borrow(s, root_slot, expr->line, expr->col);
+                expr->type = type_ref(operand, true);
+            } else {
+                sema_record_immut_borrow(s, root_slot, expr->line, expr->col);
+                expr->type = type_ref(operand, false);
+            }
         }
         return expr->type;
     }
@@ -1546,6 +1752,11 @@ static Type sema_check_expr(Sema *s, Expr *expr) {
         }
         if (!sym->mut) {
             FATAL("cannot assign to immutable variable '%s' at %d:%d", expr->as.assign.name, expr->line, expr->col);
+        }
+        if (sym->slot >= 0 && sym->slot < 4096) {
+            if (s->immut_borrow_count[sym->slot] > 0 || s->mut_borrowed[sym->slot]) {
+                FATAL("cannot assign to '%s' while it is borrowed at %d:%d", expr->as.assign.name, expr->line, expr->col);
+            }
         }
         Type rhs = sema_check_expr(s, expr->as.assign.value);
         sema_expect_type(rhs, sym->type, expr->as.assign.value->line, expr->as.assign.value->col, "assignment value");
@@ -1985,7 +2196,13 @@ static size_t codegen_expr(Codegen *cg, Function *fn, BytecodeFunction *out, Exp
         return 1;
     case EXPR_UNARY:
         codegen_expr(cg, fn, out, expr->as.unary.operand, loop_ctx);
-        instr_emit(&out->code, expr->as.unary.op == UNARY_NEG ? OP_NEG : OP_NOT, 0, 0);
+        if (expr->as.unary.op == UNARY_NEG) {
+            instr_emit(&out->code, OP_NEG, 0, 0);
+        } else if (expr->as.unary.op == UNARY_NOT) {
+            instr_emit(&out->code, OP_NOT, 0, 0);
+        } else {
+            /* References are represented as plain values in this VM revision. */
+        }
         return 1;
     case EXPR_BINARY: {
         switch (expr->as.binary.op) {

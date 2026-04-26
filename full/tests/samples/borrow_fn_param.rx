@@ -1,0 +1,8 @@
+fn read(v: &i64) -> i64 {
+    *v
+}
+
+fn main() -> i64 {
+    let n = 9;
+    read(&n)
+}

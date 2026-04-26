@@ -23,7 +23,9 @@ $successCases = @(
     @{ Name = 'break_continue'; File = 'tests\samples\break_continue.rx'; ExitCode = 31 },
     @{ Name = 'for_loop'; File = 'tests\samples\for_loop.rx'; ExitCode = 7 },
     @{ Name = 'loop_expr'; File = 'tests\samples\loop_expr.rx'; ExitCode = 12 },
-    @{ Name = 'struct_field'; File = 'tests\samples\struct_field.rx'; ExitCode = 7 }
+    @{ Name = 'struct_field'; File = 'tests\samples\struct_field.rx'; ExitCode = 7 },
+    @{ Name = 'borrow_basic'; File = 'tests\samples\borrow_basic.rx'; ExitCode = 10 },
+    @{ Name = 'borrow_fn_param'; File = 'tests\samples\borrow_fn_param.rx'; ExitCode = 9 }
 )
 
 $failureCases = @(
@@ -35,7 +37,10 @@ $failureCases = @(
     @{ Name = 'break_outside_loop'; File = 'tests\samples\break_outside_loop.rx' },
     @{ Name = 'continue_outside_loop'; File = 'tests\samples\continue_outside_loop.rx' },
     @{ Name = 'for_range_type_error'; File = 'tests\samples\for_range_type_error.rx' },
-    @{ Name = 'struct_field_error'; File = 'tests\samples\struct_field_error.rx' }
+    @{ Name = 'struct_field_error'; File = 'tests\samples\struct_field_error.rx' },
+    @{ Name = 'borrow_mut_alias_error'; File = 'tests\samples\borrow_mut_alias_error.rx' },
+    @{ Name = 'borrow_assign_conflict'; File = 'tests\samples\borrow_assign_conflict.rx' },
+    @{ Name = 'borrow_mut_immutable_error'; File = 'tests\samples\borrow_mut_immutable_error.rx' }
 )
 
 $failures = 0

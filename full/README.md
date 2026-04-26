@@ -18,10 +18,12 @@ directory is the place where the production-oriented compiler will evolve.
 - `break` and `continue` statements in loops
 - `for <name> in <start>..<end> { ... }` range loops
 - Named `struct` definitions and field access
+- References (`&` / `&mut`) and dereference (`*`)
 - Blocks and block expressions
 - Function definitions and function calls
 - `return` statements
-- Static type checking for `i64`, `bool`, `()`, and named struct types
+- Static type checking for `i64`, `bool`, `()`, named struct types, and reference types
+- Borrow checker MVP for local bindings (mutable/immutable borrow conflict detection)
 
 ## Target Scope
 
@@ -73,6 +75,7 @@ The suite includes:
 - Mutable state and loops
 - Loop control with `break` / `continue`
 - Named struct construction and field projection
+- Borrow and dereference behaviors
 - Recursive calls
 - Block expressions and shadowing
 - Negative cases for semantic errors
