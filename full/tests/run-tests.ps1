@@ -25,7 +25,8 @@ $successCases = @(
     @{ Name = 'loop_expr'; File = 'tests\samples\loop_expr.rx'; ExitCode = 12 },
     @{ Name = 'struct_field'; File = 'tests\samples\struct_field.rx'; ExitCode = 7 },
     @{ Name = 'borrow_basic'; File = 'tests\samples\borrow_basic.rx'; ExitCode = 10 },
-    @{ Name = 'borrow_fn_param'; File = 'tests\samples\borrow_fn_param.rx'; ExitCode = 9 }
+    @{ Name = 'borrow_fn_param'; File = 'tests\samples\borrow_fn_param.rx'; ExitCode = 9 },
+    @{ Name = 'enum_match'; File = 'tests\samples\enum_match.rx'; ExitCode = 2 }
 )
 
 $failureCases = @(
@@ -40,7 +41,10 @@ $failureCases = @(
     @{ Name = 'struct_field_error'; File = 'tests\samples\struct_field_error.rx' },
     @{ Name = 'borrow_mut_alias_error'; File = 'tests\samples\borrow_mut_alias_error.rx' },
     @{ Name = 'borrow_assign_conflict'; File = 'tests\samples\borrow_assign_conflict.rx' },
-    @{ Name = 'borrow_mut_immutable_error'; File = 'tests\samples\borrow_mut_immutable_error.rx' }
+    @{ Name = 'borrow_mut_immutable_error'; File = 'tests\samples\borrow_mut_immutable_error.rx' },
+    @{ Name = 'non_exhaustive_match'; File = 'tests\samples\non_exhaustive_match.rx' },
+    @{ Name = 'duplicate_match_arm'; File = 'tests\samples\duplicate_match_arm.rx' },
+    @{ Name = 'match_wrong_enum'; File = 'tests\samples\match_wrong_enum.rx' }
 )
 
 $failures = 0

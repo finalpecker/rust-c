@@ -49,6 +49,7 @@ typedef enum {
     TYPE_I64,
     TYPE_BOOL,
     TYPE_STRUCT,
+    TYPE_ENUM,
     TYPE_REF,
 } TypeKind;
 
@@ -56,17 +57,20 @@ typedef struct {
     TypeKind kind;
     char *name;
     int struct_index;
+    int enum_index;
     TypeKind ref_target_kind;
     char *ref_target_name;
     int ref_target_struct_index;
+    int ref_target_enum_index;
     bool ref_mut;
 } Type;
 
-static Type type_invalid(void) { return (Type){ TYPE_INVALID, NULL, -1, TYPE_INVALID, NULL, -1, false }; }
-static Type type_unit(void) { return (Type){ TYPE_UNIT, NULL, -1, TYPE_INVALID, NULL, -1, false }; }
-static Type type_i64(void) { return (Type){ TYPE_I64, NULL, -1, TYPE_INVALID, NULL, -1, false }; }
-static Type type_bool(void) { return (Type){ TYPE_BOOL, NULL, -1, TYPE_INVALID, NULL, -1, false }; }
-static Type type_struct(char *name) { return (Type){ TYPE_STRUCT, name, -1, TYPE_INVALID, NULL, -1, false }; }
+static Type type_invalid(void) { return (Type){ TYPE_INVALID, NULL, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
+static Type type_unit(void) { return (Type){ TYPE_UNIT, NULL, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
+static Type type_i64(void) { return (Type){ TYPE_I64, NULL, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
+static Type type_bool(void) { return (Type){ TYPE_BOOL, NULL, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
+static Type type_struct(char *name) { return (Type){ TYPE_STRUCT, name, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
+static Type type_enum(char *name) { return (Type){ TYPE_ENUM, name, -1, -1, TYPE_INVALID, NULL, -1, -1, false }; }
 static Type type_ref(Type target, bool mut) {
     Type type = type_invalid();
     type.kind = TYPE_REF;
@@ -74,6 +78,9 @@ static Type type_ref(Type target, bool mut) {
     if (target.kind == TYPE_STRUCT) {
         type.ref_target_name = target.name;
         type.ref_target_struct_index = target.struct_index;
+    } else if (target.kind == TYPE_ENUM) {
+        type.ref_target_name = target.name;
+        type.ref_target_enum_index = target.enum_index;
     }
     type.ref_mut = mut;
     return type;
@@ -92,6 +99,11 @@ static Type type_deref(Type ref_type) {
         t.struct_index = ref_type.ref_target_struct_index;
         return t;
     }
+    case TYPE_ENUM: {
+        Type t = type_enum(ref_type.ref_target_name);
+        t.enum_index = ref_type.ref_target_enum_index;
+        return t;
+    }
     default:
         return type_invalid();
     }
@@ -104,12 +116,18 @@ static bool type_equals(Type a, Type b) {
     if (a.kind == TYPE_STRUCT) {
         return a.struct_index >= 0 && a.struct_index == b.struct_index;
     }
+    if (a.kind == TYPE_ENUM) {
+        return a.enum_index >= 0 && a.enum_index == b.enum_index;
+    }
     if (a.kind == TYPE_REF) {
         if (a.ref_mut != b.ref_mut || a.ref_target_kind != b.ref_target_kind) {
             return false;
         }
         if (a.ref_target_kind == TYPE_STRUCT) {
             return a.ref_target_struct_index >= 0 && a.ref_target_struct_index == b.ref_target_struct_index;
+        }
+        if (a.ref_target_kind == TYPE_ENUM) {
+            return a.ref_target_enum_index >= 0 && a.ref_target_enum_index == b.ref_target_enum_index;
         }
         return true;
     }
@@ -124,6 +142,7 @@ static const char *type_name(Type t) {
     case TYPE_I64: return "i64";
     case TYPE_BOOL: return "bool";
     case TYPE_STRUCT: return t.name ? t.name : "<struct>";
+    case TYPE_ENUM: return t.name ? t.name : "<enum>";
     case TYPE_REF: {
         char *buf = buffers[next_buf++ % 4];
         const char *target = "<invalid>";
@@ -132,6 +151,7 @@ static const char *type_name(Type t) {
         case TYPE_BOOL: target = "bool"; break;
         case TYPE_UNIT: target = "()"; break;
         case TYPE_STRUCT: target = t.ref_target_name ? t.ref_target_name : "<struct>"; break;
+        case TYPE_ENUM: target = t.ref_target_name ? t.ref_target_name : "<enum>"; break;
         default: break;
         }
         snprintf(buf, 64, t.ref_mut ? "&mut %s" : "&%s", target);
@@ -156,6 +176,8 @@ typedef enum {
     TOK_BREAK,
     TOK_CONTINUE,
     TOK_STRUCT,
+    TOK_ENUM,
+    TOK_MATCH,
     TOK_FOR,
     TOK_IN,
     TOK_IF,
@@ -170,8 +192,10 @@ typedef enum {
     TOK_RBRACE,
     TOK_COMMA,
     TOK_COLON,
+    TOK_COLONCOLON,
     TOK_SEMICOLON,
     TOK_ARROW,
+    TOK_FATARROW,
     TOK_PLUS,
     TOK_MINUS,
     TOK_STAR,
@@ -303,6 +327,8 @@ static Token lex_next(Lexer *lex) {
         else if (strcmp(text, "break") == 0) token.kind = TOK_BREAK;
         else if (strcmp(text, "continue") == 0) token.kind = TOK_CONTINUE;
         else if (strcmp(text, "struct") == 0) token.kind = TOK_STRUCT;
+        else if (strcmp(text, "enum") == 0) token.kind = TOK_ENUM;
+        else if (strcmp(text, "match") == 0) token.kind = TOK_MATCH;
         else if (strcmp(text, "for") == 0) token.kind = TOK_FOR;
         else if (strcmp(text, "in") == 0) token.kind = TOK_IN;
         else if (strcmp(text, "if") == 0) token.kind = TOK_IF;
@@ -331,6 +357,11 @@ static Token lex_next(Lexer *lex) {
         lexer_advance(lex);
         lexer_advance(lex);
         return token_make(TOK_ARROW, line, col);
+    }
+    if (ch == '=' && lexer_peek_next(lex) == '>') {
+        lexer_advance(lex);
+        lexer_advance(lex);
+        return token_make(TOK_FATARROW, line, col);
     }
     if (ch == '=' && lexer_peek_next(lex) == '=') {
         lexer_advance(lex);
@@ -370,6 +401,11 @@ static Token lex_next(Lexer *lex) {
         lexer_advance(lex);
         lexer_advance(lex);
         return token_make(TOK_DOTDOT, line, col);
+    }
+    if (ch == ':' && lexer_peek_next(lex) == ':') {
+        lexer_advance(lex);
+        lexer_advance(lex);
+        return token_make(TOK_COLONCOLON, line, col);
     }
     if (ch == '.') {
         lexer_advance(lex);
@@ -412,6 +448,9 @@ typedef struct Block Block;
 typedef struct Param Param;
 typedef struct StructField StructField;
 typedef struct StructDef StructDef;
+typedef struct EnumVariant EnumVariant;
+typedef struct EnumDef EnumDef;
+typedef struct MatchArm MatchArm;
 typedef struct Function Function;
 typedef struct Program Program;
 
@@ -428,6 +467,8 @@ typedef enum {
     EXPR_WHILE,
     EXPR_LOOP,
     EXPR_STRUCT_LITERAL,
+    EXPR_ENUM_VARIANT,
+    EXPR_MATCH,
     EXPR_FIELD,
     EXPR_BLOCK,
 } ExprKind;
@@ -506,6 +547,18 @@ struct Expr {
             int *field_indices;
             size_t field_count;
         } struct_lit;
+        struct {
+            char *type_name;
+            char *variant_name;
+            int enum_index;
+            int variant_index;
+        } enum_variant;
+        struct {
+            Expr *scrutinee;
+            MatchArm *arms;
+            size_t arm_count;
+            int temp_slot;
+        } match_expr;
         struct {
             Expr *base;
             char *field_name;
@@ -591,6 +644,26 @@ struct StructDef {
     int index;
 };
 
+struct EnumVariant {
+    char *name;
+};
+
+struct EnumDef {
+    char *name;
+    EnumVariant *variants;
+    size_t variant_count;
+    size_t variant_cap;
+    int index;
+};
+
+struct MatchArm {
+    char *enum_name;
+    char *variant_name;
+    int enum_index;
+    int variant_index;
+    Expr *body;
+};
+
 struct Function {
     char *name;
     Param *params;
@@ -608,6 +681,9 @@ struct Program {
     StructDef **structs;
     size_t struct_count;
     size_t struct_cap;
+    EnumDef **enums;
+    size_t enum_count;
+    size_t enum_cap;
     Function **functions;
     size_t function_count;
     size_t function_cap;
@@ -664,6 +740,15 @@ static StructDef *struct_def_new(int line, int col) {
     return def;
 }
 
+static EnumDef *enum_def_new(int line, int col) {
+    (void)line;
+    (void)col;
+    EnumDef *def = (EnumDef *)xmalloc(sizeof(EnumDef));
+    memset(def, 0, sizeof(EnumDef));
+    def->index = -1;
+    return def;
+}
+
 static void struct_def_push_field(StructDef *def, StructField field) {
     if (def->field_count == def->field_cap) {
         size_t new_cap = def->field_cap == 0 ? 8 : def->field_cap * 2;
@@ -671,6 +756,15 @@ static void struct_def_push_field(StructDef *def, StructField field) {
         def->field_cap = new_cap;
     }
     def->fields[def->field_count++] = field;
+}
+
+static void enum_def_push_variant(EnumDef *def, EnumVariant variant) {
+    if (def->variant_count == def->variant_cap) {
+        size_t new_cap = def->variant_cap == 0 ? 8 : def->variant_cap * 2;
+        def->variants = (EnumVariant *)xrealloc(def->variants, new_cap * sizeof(EnumVariant));
+        def->variant_cap = new_cap;
+    }
+    def->variants[def->variant_count++] = variant;
 }
 
 static void block_push_stmt(Block *block, Stmt *stmt) {
@@ -707,6 +801,15 @@ static void program_push_struct(Program *program, StructDef *def) {
         program->struct_cap = new_cap;
     }
     program->structs[program->struct_count++] = def;
+}
+
+static void program_push_enum(Program *program, EnumDef *def) {
+    if (program->enum_count == program->enum_cap) {
+        size_t new_cap = program->enum_cap == 0 ? 8 : program->enum_cap * 2;
+        program->enums = (EnumDef **)xrealloc(program->enums, new_cap * sizeof(EnumDef *));
+        program->enum_cap = new_cap;
+    }
+    program->enums[program->enum_count++] = def;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -779,6 +882,50 @@ static Type parse_type(Parser *p) {
 static Expr *parse_expr(Parser *p);
 static Block *parse_block(Parser *p);
 
+static Expr *parse_match_expr(Parser *p) {
+    Token tok = p->current;
+    parser_expect(p, TOK_MATCH, "expected 'match'");
+
+    Expr *expr = expr_new(EXPR_MATCH, tok.line, tok.col);
+    expr->as.match_expr.scrutinee = parse_expr(p);
+    expr->as.match_expr.arms = NULL;
+    expr->as.match_expr.arm_count = 0;
+    expr->as.match_expr.temp_slot = -1;
+
+    parser_expect(p, TOK_LBRACE, "expected '{' after match scrutinee");
+    while (p->current.kind != TOK_RBRACE) {
+        if (p->current.kind != TOK_IDENT) {
+            FATAL("expected enum name in match arm at %d:%d", p->current.line, p->current.col);
+        }
+        MatchArm arm;
+        memset(&arm, 0, sizeof(arm));
+        arm.enum_name = str_dup_c(p->current.text);
+        arm.enum_index = -1;
+        arm.variant_index = -1;
+        parser_advance(p);
+        parser_expect(p, TOK_COLONCOLON, "expected '::' in match arm pattern");
+        if (p->current.kind != TOK_IDENT) {
+            FATAL("expected variant name in match arm at %d:%d", p->current.line, p->current.col);
+        }
+        arm.variant_name = str_dup_c(p->current.text);
+        parser_advance(p);
+        parser_expect(p, TOK_FATARROW, "expected '=>' in match arm");
+        arm.body = parse_expr(p);
+
+        expr->as.match_expr.arms = (MatchArm *)xrealloc(
+            expr->as.match_expr.arms,
+            (expr->as.match_expr.arm_count + 1) * sizeof(MatchArm));
+        expr->as.match_expr.arms[expr->as.match_expr.arm_count++] = arm;
+
+        if (parser_match(p, TOK_COMMA)) {
+            continue;
+        }
+        break;
+    }
+    parser_expect(p, TOK_RBRACE, "expected '}' after match arms");
+    return expr;
+}
+
 static Expr *parse_postfix(Parser *p, Expr *expr) {
     for (;;) {
         if (parser_match(p, TOK_LPAREN)) {
@@ -807,7 +954,9 @@ static Expr *parse_postfix(Parser *p, Expr *expr) {
             expr = call;
             continue;
         }
-        if (expr->kind == EXPR_VAR && parser_match(p, TOK_LBRACE)) {
+        if (expr->kind == EXPR_VAR &&
+            expr->as.var.name && isupper((unsigned char)expr->as.var.name[0]) &&
+            parser_match(p, TOK_LBRACE)) {
             Expr *literal = expr_new(EXPR_STRUCT_LITERAL, expr->line, expr->col);
             literal->as.struct_lit.type_name = expr->as.var.name;
             literal->as.struct_lit.field_names = NULL;
@@ -922,6 +1071,9 @@ static Expr *parse_primary(Parser *p) {
         }
         return expr;
     }
+    if (p->current.kind == TOK_MATCH) {
+        return parse_match_expr(p);
+    }
     if (parser_match(p, TOK_WHILE)) {
         Expr *expr = expr_new(EXPR_WHILE, tok.line, tok.col);
         expr->as.while_expr.cond = parse_expr(p);
@@ -936,6 +1088,18 @@ static Expr *parse_primary(Parser *p) {
     if (p->current.kind == TOK_IDENT) {
         char *name = str_dup_c(p->current.text);
         parser_advance(p);
+        if (parser_match(p, TOK_COLONCOLON)) {
+            if (p->current.kind != TOK_IDENT) {
+                FATAL("expected enum variant name after '::' at %d:%d", p->current.line, p->current.col);
+            }
+            Expr *expr = expr_new(EXPR_ENUM_VARIANT, tok.line, tok.col);
+            expr->as.enum_variant.type_name = name;
+            expr->as.enum_variant.variant_name = str_dup_c(p->current.text);
+            expr->as.enum_variant.enum_index = -1;
+            expr->as.enum_variant.variant_index = -1;
+            parser_advance(p);
+            return expr;
+        }
         Expr *expr = expr_new(EXPR_VAR, tok.line, tok.col);
         expr->as.var.name = name;
         expr->as.var.slot = -1;
@@ -1209,6 +1373,36 @@ static StructDef *parse_struct_def(Parser *p) {
     return def;
 }
 
+static EnumDef *parse_enum_def(Parser *p) {
+    Token tok = p->current;
+    parser_expect(p, TOK_ENUM, "expected 'enum'");
+    if (p->current.kind != TOK_IDENT) {
+        FATAL("expected enum name after 'enum' at %d:%d", p->current.line, p->current.col);
+    }
+
+    EnumDef *def = enum_def_new(tok.line, tok.col);
+    def->name = str_dup_c(p->current.text);
+    parser_advance(p);
+    parser_expect(p, TOK_LBRACE, "expected '{' after enum name");
+
+    while (p->current.kind != TOK_RBRACE) {
+        if (p->current.kind != TOK_IDENT) {
+            FATAL("expected enum variant name at %d:%d", p->current.line, p->current.col);
+        }
+        EnumVariant variant;
+        variant.name = str_dup_c(p->current.text);
+        parser_advance(p);
+        enum_def_push_variant(def, variant);
+        if (parser_match(p, TOK_COMMA)) {
+            continue;
+        }
+        break;
+    }
+
+    parser_expect(p, TOK_RBRACE, "expected '}' after enum definition");
+    return def;
+}
+
 static Block *parse_block(Parser *p) {
     Token open = p->current;
     parser_expect(p, TOK_LBRACE, "expected '{'");
@@ -1322,6 +1516,10 @@ static Program *parse_program(const char *source) {
     while (p.current.kind != TOK_EOF) {
         if (p.current.kind == TOK_STRUCT) {
             program_push_struct(program, parse_struct_def(&p));
+            continue;
+        }
+        if (p.current.kind == TOK_ENUM) {
+            program_push_enum(program, parse_enum_def(&p));
             continue;
         }
         program_push_function(program, parse_function(&p));
@@ -1485,6 +1683,24 @@ static StructDef *program_find_struct(Program *program, const char *name) {
     return NULL;
 }
 
+static EnumDef *program_find_enum(Program *program, const char *name) {
+    for (size_t i = 0; i < program->enum_count; ++i) {
+        if (strcmp(program->enums[i]->name, name) == 0) {
+            return program->enums[i];
+        }
+    }
+    return NULL;
+}
+
+static int enum_find_variant_index(EnumDef *def, const char *name) {
+    for (size_t i = 0; i < def->variant_count; ++i) {
+        if (strcmp(def->variants[i].name, name) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 static int struct_find_field_index(StructDef *def, const char *name) {
     for (size_t i = 0; i < def->field_count; ++i) {
         if (strcmp(def->fields[i].name, name) == 0) {
@@ -1499,29 +1715,43 @@ static Type sema_resolve_type(Sema *s, Type type, int line, int col) {
         if (type.ref_target_kind == TYPE_REF) {
             FATAL("nested reference types are not supported yet at %d:%d", line, col);
         }
-        if (type.ref_target_kind == TYPE_STRUCT) {
+        if (type.ref_target_kind == TYPE_STRUCT || type.ref_target_kind == TYPE_ENUM) {
             if (!type.ref_target_name) {
                 FATAL("invalid reference type at %d:%d", line, col);
             }
             StructDef *def = program_find_struct(s->program, type.ref_target_name);
-            if (!def) {
-                FATAL("unknown struct type '%s' at %d:%d", type.ref_target_name, line, col);
+            if (def) {
+                type.ref_target_kind = TYPE_STRUCT;
+                type.ref_target_struct_index = def->index;
+            } else {
+                EnumDef *enm = program_find_enum(s->program, type.ref_target_name);
+                if (!enm) {
+                    FATAL("unknown named type '%s' at %d:%d", type.ref_target_name, line, col);
+                }
+                type.ref_target_kind = TYPE_ENUM;
+                type.ref_target_enum_index = enm->index;
             }
-            type.ref_target_struct_index = def->index;
         }
         return type;
     }
-    if (type.kind != TYPE_STRUCT) {
+    if (type.kind != TYPE_STRUCT && type.kind != TYPE_ENUM) {
         return type;
     }
     if (!type.name) {
         FATAL("invalid struct type at %d:%d", line, col);
     }
     StructDef *def = program_find_struct(s->program, type.name);
-    if (!def) {
-        FATAL("unknown struct type '%s' at %d:%d", type.name, line, col);
+    if (def) {
+        type.kind = TYPE_STRUCT;
+        type.struct_index = def->index;
+        return type;
     }
-    type.struct_index = def->index;
+    EnumDef *enm = program_find_enum(s->program, type.name);
+    if (!enm) {
+        FATAL("unknown named type '%s' at %d:%d", type.name, line, col);
+    }
+    type.kind = TYPE_ENUM;
+    type.enum_index = enm->index;
     return type;
 }
 
@@ -1626,6 +1856,75 @@ static Type sema_check_struct_literal(Sema *s, Expr *expr) {
     }
     expr->type = type_struct(def->name);
     expr->type.struct_index = def->index;
+    return expr->type;
+}
+
+static Type sema_check_enum_variant(Sema *s, Expr *expr) {
+    EnumDef *enm = program_find_enum(s->program, expr->as.enum_variant.type_name);
+    if (!enm) {
+        FATAL("unknown enum '%s' at %d:%d", expr->as.enum_variant.type_name, expr->line, expr->col);
+    }
+    int variant_index = enum_find_variant_index(enm, expr->as.enum_variant.variant_name);
+    if (variant_index < 0) {
+        FATAL("unknown variant '%s::%s' at %d:%d",
+              enm->name, expr->as.enum_variant.variant_name, expr->line, expr->col);
+    }
+    expr->as.enum_variant.enum_index = enm->index;
+    expr->as.enum_variant.variant_index = variant_index;
+    expr->type = type_enum(enm->name);
+    expr->type.enum_index = enm->index;
+    return expr->type;
+}
+
+static Type sema_check_match(Sema *s, Expr *expr) {
+    Type scrutinee = sema_check_expr(s, expr->as.match_expr.scrutinee);
+    if (scrutinee.kind != TYPE_ENUM || scrutinee.enum_index < 0) {
+        FATAL("match scrutinee must be an enum value at %d:%d", expr->line, expr->col);
+    }
+    EnumDef *enm = s->program->enums[scrutinee.enum_index];
+    if (expr->as.match_expr.arm_count == 0) {
+        FATAL("match requires at least one arm at %d:%d", expr->line, expr->col);
+    }
+
+    bool *covered = (bool *)xmalloc(enm->variant_count * sizeof(bool));
+    memset(covered, 0, enm->variant_count * sizeof(bool));
+
+    Type arm_type = type_invalid();
+    for (size_t i = 0; i < expr->as.match_expr.arm_count; ++i) {
+        MatchArm *arm = &expr->as.match_expr.arms[i];
+        if (strcmp(arm->enum_name, enm->name) != 0) {
+            FATAL("match arm enum '%s' does not match scrutinee enum '%s' at %d:%d",
+                  arm->enum_name, enm->name, expr->line, expr->col);
+        }
+        int variant_index = enum_find_variant_index(enm, arm->variant_name);
+        if (variant_index < 0) {
+            FATAL("unknown match arm variant '%s::%s' at %d:%d",
+                  arm->enum_name, arm->variant_name, expr->line, expr->col);
+        }
+        if (covered[variant_index]) {
+            FATAL("duplicate match arm for variant '%s::%s' at %d:%d",
+                  arm->enum_name, arm->variant_name, expr->line, expr->col);
+        }
+        covered[variant_index] = true;
+        arm->enum_index = enm->index;
+        arm->variant_index = variant_index;
+
+        Type body_type = sema_check_expr(s, arm->body);
+        if (i == 0) {
+            arm_type = body_type;
+        } else if (!type_equals(arm_type, body_type)) {
+            FATAL("all match arms must return the same type at %d:%d", expr->line, expr->col);
+        }
+    }
+
+    for (size_t i = 0; i < enm->variant_count; ++i) {
+        if (!covered[i]) {
+            FATAL("non-exhaustive match for enum '%s' at %d:%d", enm->name, expr->line, expr->col);
+        }
+    }
+
+    expr->as.match_expr.temp_slot = s->next_slot++;
+    expr->type = arm_type;
     return expr->type;
 }
 
@@ -1769,6 +2068,10 @@ static Type sema_check_expr(Sema *s, Expr *expr) {
         return sema_check_call(s, expr);
     case EXPR_STRUCT_LITERAL:
         return sema_check_struct_literal(s, expr);
+    case EXPR_ENUM_VARIANT:
+        return sema_check_enum_variant(s, expr);
+    case EXPR_MATCH:
+        return sema_check_match(s, expr);
     case EXPR_FIELD:
         return sema_check_field_access(s, expr);
     case EXPR_IF: {
@@ -1912,6 +2215,19 @@ static void sema_check_function(Sema *s, Function *fn) {
 }
 
 static void sema_check_program(Program *program) {
+    for (size_t i = 0; i < program->enum_count; ++i) {
+        EnumDef *enm = program->enums[i];
+        if (program_find_enum(program, enm->name) != enm) {
+            FATAL("duplicate enum '%s' at %d:%d", enm->name, 0, 0);
+        }
+        enm->index = (int)i;
+        for (size_t j = 0; j < enm->variant_count; ++j) {
+            if (enum_find_variant_index(enm, enm->variants[j].name) != (int)j) {
+                FATAL("duplicate enum variant '%s::%s'", enm->name, enm->variants[j].name);
+            }
+        }
+    }
+
     for (size_t i = 0; i < program->struct_count; ++i) {
         StructDef *def = program->structs[i];
         if (program_find_struct(program, def->name) != def) {
@@ -2276,6 +2592,37 @@ static size_t codegen_expr(Codegen *cg, Function *fn, BytecodeFunction *out, Exp
             codegen_expr(cg, fn, out, expr->as.struct_lit.field_values[literal_index], loop_ctx);
         }
         instr_emit(&out->code, OP_STRUCT_MAKE, def->index, (int)def->field_count);
+        return 1;
+    }
+    case EXPR_ENUM_VARIANT:
+        instr_emit(&out->code, OP_PUSH_I64, expr->as.enum_variant.variant_index, 0);
+        return 1;
+    case EXPR_MATCH: {
+        codegen_expr(cg, fn, out, expr->as.match_expr.scrutinee, loop_ctx);
+        instr_emit(&out->code, OP_STORE, expr->as.match_expr.temp_slot, 0);
+
+        IndexVec arm_end_jumps;
+        memset(&arm_end_jumps, 0, sizeof(arm_end_jumps));
+
+        for (size_t i = 0; i < expr->as.match_expr.arm_count; ++i) {
+            MatchArm *arm = &expr->as.match_expr.arms[i];
+            instr_emit(&out->code, OP_LOAD, expr->as.match_expr.temp_slot, 0);
+            instr_emit(&out->code, OP_PUSH_I64, arm->variant_index, 0);
+            instr_emit(&out->code, OP_EQ, 0, 0);
+            size_t jump_next = instr_emit(&out->code, OP_JUMP_IF_FALSE, 0, 0);
+
+            codegen_expr(cg, fn, out, arm->body, loop_ctx);
+            index_vec_push(&arm_end_jumps, instr_emit(&out->code, OP_JUMP, 0, 0));
+
+            size_t next_target = out->code.len;
+            out->code.items[jump_next].arg = (long long)next_target;
+        }
+
+        instr_emit(&out->code, OP_PUSH_I64, 0, 0);
+        size_t end_target = out->code.len;
+        for (size_t i = 0; i < arm_end_jumps.len; ++i) {
+            out->code.items[arm_end_jumps.items[i]].arg = (long long)end_target;
+        }
         return 1;
     }
     case EXPR_FIELD:

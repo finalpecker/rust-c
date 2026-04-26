@@ -18,6 +18,7 @@ directory is the place where the production-oriented compiler will evolve.
 - `break` and `continue` statements in loops
 - `for <name> in <start>..<end> { ... }` range loops
 - Named `struct` definitions and field access
+- Named `enum` definitions and `match` expressions (MVP)
 - References (`&` / `&mut`) and dereference (`*`)
 - Blocks and block expressions
 - Function definitions and function calls
@@ -75,6 +76,7 @@ The suite includes:
 - Mutable state and loops
 - Loop control with `break` / `continue`
 - Named struct construction and field projection
+- Enum variant values and exhaustive match checking
 - Borrow and dereference behaviors
 - Recursive calls
 - Block expressions and shadowing

@@ -1,0 +1,17 @@
+enum Color {
+    Red,
+    Blue,
+}
+
+enum Size {
+    S,
+    L,
+}
+
+fn main() -> i64 {
+    let c = Color::Red;
+    match c {
+        Size::S => 1,
+        Size::L => 2,
+    }
+}

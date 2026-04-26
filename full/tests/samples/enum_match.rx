@@ -1,0 +1,15 @@
+enum Color {
+    Red,
+    Blue,
+}
+
+fn value(c: Color) -> i64 {
+    match c {
+        Color::Red => 1,
+        Color::Blue => 2,
+    }
+}
+
+fn main() -> i64 {
+    value(Color::Blue)
+}
