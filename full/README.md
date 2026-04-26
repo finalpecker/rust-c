@@ -19,7 +19,7 @@ directory is the place where the production-oriented compiler will evolve.
 - `for <name> in <start>..<end> { ... }` range loops
 - Named `struct` definitions and field access
 - Named `enum` definitions and `match` expressions (MVP)
-- Single-value enum payloads and binding matches
+- Tuple-like enum payloads and binding matches
 - References (`&` / `&mut`) and dereference (`*`)
 - Blocks and block expressions
 - Function definitions and function calls
@@ -78,7 +78,7 @@ The suite includes:
 - Loop control with `break` / `continue`
 - Named struct construction and field projection
 - Enum variant values and exhaustive match checking
-- Enum payload construction and binding patterns
+- Enum payload construction and binding patterns, including tuple-like payloads
 - Borrow and dereference behaviors
 - Recursive calls
 - Block expressions and shadowing

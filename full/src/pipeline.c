@@ -164,8 +164,8 @@ static const char *type_name(Type t) {
 typedef struct {
     int enum_index;
     int variant_index;
-    bool has_payload;
-    long long payload;
+    size_t field_count;
+    long long fields[];
 } EnumObject;
 
 static EnumObject *enum_object_from_value(long long value) {
@@ -565,8 +565,9 @@ struct Expr {
         struct {
             char *type_name;
             char *variant_name;
-            Expr *payload;
-            bool has_payload;
+            Expr **payloads;
+            size_t payload_count;
+            size_t payload_cap;
             int enum_index;
             int variant_index;
         } enum_variant;
@@ -663,8 +664,9 @@ struct StructDef {
 
 struct EnumVariant {
     char *name;
-    bool has_payload;
-    Type payload_type;
+    size_t payload_type_count;
+    size_t payload_type_cap;
+    Type *payload_types;
 };
 
 struct EnumDef {
@@ -680,8 +682,10 @@ struct MatchArm {
     char *variant_name;
     int enum_index;
     int variant_index;
-    char *binding_name;
-    int binding_slot;
+    char **binding_names;
+    int *binding_slots;
+    size_t binding_count;
+    size_t binding_cap;
     Expr *body;
 };
 
@@ -750,6 +754,36 @@ static Program *program_new(void) {
     Program *program = (Program *)xmalloc(sizeof(Program));
     memset(program, 0, sizeof(Program));
     return program;
+}
+
+static void enum_variant_push_payload_type(EnumVariant *variant, Type type) {
+    if (variant->payload_type_count == variant->payload_type_cap) {
+        size_t new_cap = variant->payload_type_cap == 0 ? 4 : variant->payload_type_cap * 2;
+        variant->payload_types = (Type *)xrealloc(variant->payload_types, new_cap * sizeof(Type));
+        variant->payload_type_cap = new_cap;
+    }
+    variant->payload_types[variant->payload_type_count++] = type;
+}
+
+static void expr_enum_variant_push_payload(Expr *expr, Expr *payload) {
+    if (expr->as.enum_variant.payload_count == expr->as.enum_variant.payload_cap) {
+        size_t new_cap = expr->as.enum_variant.payload_cap == 0 ? 4 : expr->as.enum_variant.payload_cap * 2;
+        expr->as.enum_variant.payloads = (Expr **)xrealloc(expr->as.enum_variant.payloads, new_cap * sizeof(Expr *));
+        expr->as.enum_variant.payload_cap = new_cap;
+    }
+    expr->as.enum_variant.payloads[expr->as.enum_variant.payload_count++] = payload;
+}
+
+static void match_arm_push_binding(MatchArm *arm, char *name) {
+    if (arm->binding_count == arm->binding_cap) {
+        size_t new_cap = arm->binding_cap == 0 ? 4 : arm->binding_cap * 2;
+        arm->binding_names = (char **)xrealloc(arm->binding_names, new_cap * sizeof(char *));
+        arm->binding_slots = (int *)xrealloc(arm->binding_slots, new_cap * sizeof(int));
+        arm->binding_cap = new_cap;
+    }
+    arm->binding_names[arm->binding_count] = name;
+    arm->binding_slots[arm->binding_count] = -1;
+    arm->binding_count++;
 }
 
 static StructDef *struct_def_new(int line, int col) {
@@ -923,7 +957,10 @@ static Expr *parse_match_expr(Parser *p) {
         arm.enum_name = str_dup_c(p->current.text);
         arm.enum_index = -1;
         arm.variant_index = -1;
-        arm.binding_slot = -1;
+        arm.binding_names = NULL;
+        arm.binding_slots = NULL;
+        arm.binding_count = 0;
+        arm.binding_cap = 0;
         parser_advance(p);
         parser_expect(p, TOK_COLONCOLON, "expected '::' in match arm pattern");
         if (p->current.kind != TOK_IDENT) {
@@ -932,12 +969,20 @@ static Expr *parse_match_expr(Parser *p) {
         arm.variant_name = str_dup_c(p->current.text);
         parser_advance(p);
         if (parser_match(p, TOK_LPAREN)) {
-            if (p->current.kind != TOK_IDENT) {
-                FATAL("expected binding name in match arm at %d:%d", p->current.line, p->current.col);
+            if (!parser_match(p, TOK_RPAREN)) {
+                for (;;) {
+                    if (p->current.kind != TOK_IDENT) {
+                        FATAL("expected binding name in match arm at %d:%d", p->current.line, p->current.col);
+                    }
+                    match_arm_push_binding(&arm, str_dup_c(p->current.text));
+                    parser_advance(p);
+                    if (parser_match(p, TOK_COMMA)) {
+                        continue;
+                    }
+                    parser_expect(p, TOK_RPAREN, "expected ')' after match arm binding names");
+                    break;
+                }
             }
-            arm.binding_name = str_dup_c(p->current.text);
-            parser_advance(p);
-            parser_expect(p, TOK_RPAREN, "expected ')' after match arm binding name");
         }
         parser_expect(p, TOK_FATARROW, "expected '=>' in match arm");
         arm.body = parse_expr(p);
@@ -1125,15 +1170,23 @@ static Expr *parse_primary(Parser *p) {
             Expr *expr = expr_new(EXPR_ENUM_VARIANT, tok.line, tok.col);
             expr->as.enum_variant.type_name = name;
             expr->as.enum_variant.variant_name = str_dup_c(p->current.text);
-            expr->as.enum_variant.has_payload = false;
-            expr->as.enum_variant.payload = NULL;
+            expr->as.enum_variant.payloads = NULL;
+            expr->as.enum_variant.payload_count = 0;
+            expr->as.enum_variant.payload_cap = 0;
             expr->as.enum_variant.enum_index = -1;
             expr->as.enum_variant.variant_index = -1;
             parser_advance(p);
             if (parser_match(p, TOK_LPAREN)) {
-                expr->as.enum_variant.has_payload = true;
-                expr->as.enum_variant.payload = parse_expr(p);
-                parser_expect(p, TOK_RPAREN, "expected ')' after enum variant payload");
+                if (!parser_match(p, TOK_RPAREN)) {
+                    for (;;) {
+                        expr_enum_variant_push_payload(expr, parse_expr(p));
+                        if (parser_match(p, TOK_COMMA)) {
+                            continue;
+                        }
+                        parser_expect(p, TOK_RPAREN, "expected ')' after enum variant payloads");
+                        break;
+                    }
+                }
             }
             return expr;
         }
@@ -1428,13 +1481,21 @@ static EnumDef *parse_enum_def(Parser *p) {
         }
         EnumVariant variant;
         variant.name = str_dup_c(p->current.text);
-        variant.has_payload = false;
-        variant.payload_type = type_invalid();
+        variant.payload_type_count = 0;
+        variant.payload_type_cap = 0;
+        variant.payload_types = NULL;
         parser_advance(p);
         if (parser_match(p, TOK_LPAREN)) {
-            variant.has_payload = true;
-            variant.payload_type = parse_type(p);
-            parser_expect(p, TOK_RPAREN, "expected ')' after enum variant payload type");
+            if (!parser_match(p, TOK_RPAREN)) {
+                for (;;) {
+                    enum_variant_push_payload_type(&variant, parse_type(p));
+                    if (parser_match(p, TOK_COMMA)) {
+                        continue;
+                    }
+                    parser_expect(p, TOK_RPAREN, "expected ')' after enum variant payload types");
+                    break;
+                }
+            }
         }
         enum_def_push_variant(def, variant);
         if (parser_match(p, TOK_COMMA)) {
@@ -1807,8 +1868,8 @@ static void sema_resolve_struct_fields(Sema *s, StructDef *def) {
 
 static void sema_resolve_enum_variants(Sema *s, EnumDef *def) {
     for (size_t i = 0; i < def->variant_count; ++i) {
-        if (def->variants[i].has_payload) {
-            def->variants[i].payload_type = sema_resolve_type(s, def->variants[i].payload_type, 0, 0);
+        for (size_t j = 0; j < def->variants[i].payload_type_count; ++j) {
+            def->variants[i].payload_types[j] = sema_resolve_type(s, def->variants[i].payload_types[j], 0, 0);
         }
     }
 }
@@ -1922,15 +1983,15 @@ static Type sema_check_enum_variant(Sema *s, Expr *expr) {
               enm->name, expr->as.enum_variant.variant_name, expr->line, expr->col);
     }
     EnumVariant *variant = &enm->variants[variant_index];
-    if (variant->has_payload != expr->as.enum_variant.has_payload) {
+    if (variant->payload_type_count != expr->as.enum_variant.payload_count) {
         FATAL("variant '%s::%s' payload arity mismatch at %d:%d",
               enm->name, variant->name, expr->line, expr->col);
     }
-    if (variant->has_payload) {
-        Type payload_type = sema_check_expr(s, expr->as.enum_variant.payload);
-        sema_expect_type(payload_type, variant->payload_type,
-                         expr->as.enum_variant.payload->line,
-                         expr->as.enum_variant.payload->col,
+    for (size_t i = 0; i < expr->as.enum_variant.payload_count; ++i) {
+        Type payload_type = sema_check_expr(s, expr->as.enum_variant.payloads[i]);
+        sema_expect_type(payload_type, variant->payload_types[i],
+                         expr->as.enum_variant.payloads[i]->line,
+                         expr->as.enum_variant.payloads[i]->col,
                          "enum payload");
     }
     expr->as.enum_variant.enum_index = enm->index;
@@ -1974,21 +2035,20 @@ static Type sema_check_match(Sema *s, Expr *expr) {
         arm->variant_index = variant_index;
 
         EnumVariant *variant = &enm->variants[variant_index];
-        if (variant->has_payload) {
-            if (!arm->binding_name) {
-                FATAL("match arm for '%s::%s' must bind payload at %d:%d",
-                      arm->enum_name, arm->variant_name, expr->line, expr->col);
-            }
-            sema_push_scope(s);
-            sema_declare(s, arm->binding_name, variant->payload_type, false, expr->line, expr->col);
-            arm->binding_slot = s->next_slot - 1;
-        } else if (arm->binding_name) {
-            FATAL("match arm for '%s::%s' does not carry a payload at %d:%d",
+        if (variant->payload_type_count != arm->binding_count) {
+            FATAL("match arm for '%s::%s' payload arity mismatch at %d:%d",
                   arm->enum_name, arm->variant_name, expr->line, expr->col);
+        }
+        if (arm->binding_count > 0) {
+            sema_push_scope(s);
+            for (size_t j = 0; j < arm->binding_count; ++j) {
+                sema_declare(s, arm->binding_names[j], variant->payload_types[j], false, expr->line, expr->col);
+                arm->binding_slots[j] = s->next_slot - 1;
+            }
         }
 
         Type body_type = sema_check_expr(s, arm->body);
-        if (variant->has_payload) {
+        if (arm->binding_count > 0) {
             sema_pop_scope(s);
         }
         if (i == 0) {
@@ -2682,11 +2742,10 @@ static size_t codegen_expr(Codegen *cg, Function *fn, BytecodeFunction *out, Exp
         return 1;
     }
     case EXPR_ENUM_VARIANT:
-        if (expr->as.enum_variant.has_payload) {
-            codegen_expr(cg, fn, out, expr->as.enum_variant.payload, loop_ctx);
-        } else {
-            instr_emit(&out->code, OP_PUSH_I64, 0, 0);
+        for (size_t i = 0; i < expr->as.enum_variant.payload_count; ++i) {
+            codegen_expr(cg, fn, out, expr->as.enum_variant.payloads[i], loop_ctx);
         }
+        instr_emit(&out->code, OP_PUSH_I64, (int)expr->as.enum_variant.payload_count, 0);
         instr_emit(&out->code, OP_ENUM_MAKE, expr->as.enum_variant.enum_index, expr->as.enum_variant.variant_index);
         return 1;
     case EXPR_MATCH: {
@@ -2704,10 +2763,12 @@ static size_t codegen_expr(Codegen *cg, Function *fn, BytecodeFunction *out, Exp
             instr_emit(&out->code, OP_EQ, 0, 0);
             size_t jump_next = instr_emit(&out->code, OP_JUMP_IF_FALSE, 0, 0);
 
-            if (arm->binding_name) {
+            if (arm->binding_count > 0) {
                 instr_emit(&out->code, OP_LOAD, expr->as.match_expr.temp_slot, 0);
                 instr_emit(&out->code, OP_ENUM_GET, arm->enum_index, arm->variant_index);
-                instr_emit(&out->code, OP_STORE, arm->binding_slot, 0);
+                for (size_t j = arm->binding_count; j > 0; --j) {
+                    instr_emit(&out->code, OP_STORE, arm->binding_slots[j - 1], 0);
+                }
             }
 
             codegen_expr(cg, fn, out, arm->body, loop_ctx);
@@ -3053,11 +3114,17 @@ static long long vm_run(BytecodeProgram *program) {
         case OP_ENUM_MAKE: {
             int enum_index = (int)instr.arg;
             int variant_index = instr.aux;
-            EnumObject *object = (EnumObject *)xmalloc(sizeof(EnumObject));
+            int field_count = (int)vm_pop(&vm);
+            if (field_count < 0) {
+                FATAL("invalid enum payload arity in runtime");
+            }
+            EnumObject *object = (EnumObject *)xmalloc(sizeof(EnumObject) + (size_t)field_count * sizeof(long long));
             object->enum_index = enum_index;
             object->variant_index = variant_index;
-            object->payload = vm_pop(&vm);
-            object->has_payload = true;
+            object->field_count = (size_t)field_count;
+            for (int i = field_count - 1; i >= 0; --i) {
+                object->fields[(size_t)i] = vm_pop(&vm);
+            }
             vm_push(&vm, enum_object_to_value(object));
             break;
         }
@@ -3072,10 +3139,9 @@ static long long vm_run(BytecodeProgram *program) {
             if (object->enum_index != enum_index || object->variant_index != variant_index) {
                 FATAL("enum variant mismatch in runtime");
             }
-            if (!object->has_payload) {
-                FATAL("enum variant has no payload in runtime");
+            for (size_t i = 0; i < object->field_count; ++i) {
+                vm_push(&vm, object->fields[i]);
             }
-            vm_push(&vm, object->payload);
             break;
         }
         case OP_STRUCT_MAKE: {

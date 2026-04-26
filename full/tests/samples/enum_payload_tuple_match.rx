@@ -1,0 +1,15 @@
+enum Pair {
+    Pair(i64, i64),
+    None,
+}
+
+fn sum_pair(v: Pair) -> i64 {
+    match v {
+        Pair::Pair(a, b) => a + b,
+        Pair::None => 0,
+    }
+}
+
+fn main() -> i64 {
+    sum_pair(Pair::Pair(3, 4))
+}

@@ -1,0 +1,11 @@
+enum Pair {
+    Pair(i64, i64),
+    None,
+}
+
+fn main() -> i64 {
+    match Pair::Pair(1, 2) {
+        Pair::Pair(a) => a,
+        Pair::None => 0,
+    }
+}
