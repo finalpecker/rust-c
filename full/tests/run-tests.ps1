@@ -27,6 +27,7 @@ $successCases = @(
     @{ Name = 'borrow_basic'; File = 'tests\samples\borrow_basic.rx'; ExitCode = 10 },
     @{ Name = 'borrow_fn_param'; File = 'tests\samples\borrow_fn_param.rx'; ExitCode = 9 },
     @{ Name = 'enum_match'; File = 'tests\samples\enum_match.rx'; ExitCode = 2 }
+    @{ Name = 'enum_payload_match'; File = 'tests\samples\enum_payload_match.rx'; ExitCode = 7 }
 )
 
 $failureCases = @(
@@ -44,7 +45,9 @@ $failureCases = @(
     @{ Name = 'borrow_mut_immutable_error'; File = 'tests\samples\borrow_mut_immutable_error.rx' },
     @{ Name = 'non_exhaustive_match'; File = 'tests\samples\non_exhaustive_match.rx' },
     @{ Name = 'duplicate_match_arm'; File = 'tests\samples\duplicate_match_arm.rx' },
-    @{ Name = 'match_wrong_enum'; File = 'tests\samples\match_wrong_enum.rx' }
+    @{ Name = 'match_wrong_enum'; File = 'tests\samples\match_wrong_enum.rx' },
+    @{ Name = 'enum_payload_arity_error'; File = 'tests\samples\enum_payload_arity_error.rx' },
+    @{ Name = 'payload_binding_error'; File = 'tests\samples\payload_binding_error.rx' }
 )
 
 $failures = 0

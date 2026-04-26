@@ -1,0 +1,9 @@
+enum Flag {
+    Yes,
+    No,
+}
+
+fn main() -> i64 {
+    let f = Flag::Yes(x);
+    0
+}

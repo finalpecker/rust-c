@@ -1,0 +1,9 @@
+enum OptionI64 {
+    Some(i64),
+    None,
+}
+
+fn main() -> i64 {
+    let v = OptionI64::Some;
+    0
+}

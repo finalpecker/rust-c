@@ -1,0 +1,15 @@
+enum OptionI64 {
+    Some(i64),
+    None,
+}
+
+fn unwrap_or_zero(v: OptionI64) -> i64 {
+    match v {
+        OptionI64::Some(x) => x,
+        OptionI64::None => 0,
+    }
+}
+
+fn main() -> i64 {
+    unwrap_or_zero(OptionI64::Some(7))
+}
