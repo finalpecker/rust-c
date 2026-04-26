@@ -1,0 +1,11 @@
+enum Wrap {
+    Wrap((i64, i64)),
+    None,
+}
+
+fn main() -> i64 {
+    match Wrap::Wrap((1, 2)) {
+        Wrap::Wrap((a, b, c)) => a + b + c,
+        Wrap::None => 0,
+    }
+}

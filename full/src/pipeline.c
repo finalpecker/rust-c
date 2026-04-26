@@ -20,7 +20,7 @@
  * - return statements.
  *
  * Unsupported Rust features (intentional for a teaching compiler):
- * - Lifetimes, ownership, traits, enums, generics, modules, arrays,
+ * - Lifetimes, ownership, traits, generics, modules, arrays,
  *   references, and the borrow checker.
  *
  * The implementation focuses on a rigorous, well-structured subset that is
@@ -514,6 +514,7 @@ typedef struct StructDef StructDef;
 typedef struct EnumVariant EnumVariant;
 typedef struct EnumDef EnumDef;
 typedef struct MatchArm MatchArm;
+typedef struct Pattern Pattern;
 typedef struct Function Function;
 typedef struct Program Program;
 
@@ -732,15 +733,31 @@ struct EnumDef {
     int index;
 };
 
+typedef enum {
+    PAT_BINDING,
+    PAT_TUPLE,
+} PatternKind;
+
+struct Pattern {
+    PatternKind kind;
+    int line;
+    int col;
+    int slot;
+    int temp_slot;
+    char *name;
+    Pattern **items;
+    size_t item_count;
+    size_t item_cap;
+};
+
 struct MatchArm {
     char *enum_name;
     char *variant_name;
     int enum_index;
     int variant_index;
-    char **binding_names;
-    int *binding_slots;
-    size_t binding_count;
-    size_t binding_cap;
+    Pattern **payload_patterns;
+    size_t payload_pattern_count;
+    size_t payload_pattern_cap;
     Expr *body;
 };
 
@@ -838,16 +855,33 @@ static void expr_tuple_push_item(Expr *expr, Expr *item) {
     expr->as.tuple_lit.items[expr->as.tuple_lit.item_count++] = item;
 }
 
-static void match_arm_push_binding(MatchArm *arm, char *name) {
-    if (arm->binding_count == arm->binding_cap) {
-        size_t new_cap = arm->binding_cap == 0 ? 4 : arm->binding_cap * 2;
-        arm->binding_names = (char **)xrealloc(arm->binding_names, new_cap * sizeof(char *));
-        arm->binding_slots = (int *)xrealloc(arm->binding_slots, new_cap * sizeof(int));
-        arm->binding_cap = new_cap;
+static Pattern *pattern_new(PatternKind kind, int line, int col) {
+    Pattern *pattern = (Pattern *)xmalloc(sizeof(Pattern));
+    memset(pattern, 0, sizeof(Pattern));
+    pattern->kind = kind;
+    pattern->line = line;
+    pattern->col = col;
+    pattern->slot = -1;
+    pattern->temp_slot = -1;
+    return pattern;
+}
+
+static void pattern_push_item(Pattern *pattern, Pattern *item) {
+    if (pattern->item_count == pattern->item_cap) {
+        size_t new_cap = pattern->item_cap == 0 ? 4 : pattern->item_cap * 2;
+        pattern->items = (Pattern **)xrealloc(pattern->items, new_cap * sizeof(Pattern *));
+        pattern->item_cap = new_cap;
     }
-    arm->binding_names[arm->binding_count] = name;
-    arm->binding_slots[arm->binding_count] = -1;
-    arm->binding_count++;
+    pattern->items[pattern->item_count++] = item;
+}
+
+static void match_arm_push_pattern(MatchArm *arm, Pattern *pattern) {
+    if (arm->payload_pattern_count == arm->payload_pattern_cap) {
+        size_t new_cap = arm->payload_pattern_cap == 0 ? 4 : arm->payload_pattern_cap * 2;
+        arm->payload_patterns = (Pattern **)xrealloc(arm->payload_patterns, new_cap * sizeof(Pattern *));
+        arm->payload_pattern_cap = new_cap;
+    }
+    arm->payload_patterns[arm->payload_pattern_count++] = pattern;
 }
 
 static StructDef *struct_def_new(int line, int col) {
@@ -1020,6 +1054,33 @@ static Type parse_type(Parser *p) {
 static Expr *parse_expr(Parser *p);
 static Block *parse_block(Parser *p);
 
+static Pattern *parse_pattern(Parser *p) {
+    Token tok = p->current;
+    if (parser_match(p, TOK_LPAREN)) {
+        Pattern *pattern = pattern_new(PAT_TUPLE, tok.line, tok.col);
+        if (parser_match(p, TOK_RPAREN)) {
+            return pattern;
+        }
+        for (;;) {
+            pattern_push_item(pattern, parse_pattern(p));
+            if (parser_match(p, TOK_COMMA)) {
+                continue;
+            }
+            parser_expect(p, TOK_RPAREN, "expected ')' after tuple pattern");
+            break;
+        }
+        return pattern;
+    }
+    if (p->current.kind == TOK_IDENT) {
+        Pattern *pattern = pattern_new(PAT_BINDING, tok.line, tok.col);
+        pattern->name = str_dup_c(p->current.text);
+        parser_advance(p);
+        return pattern;
+    }
+    FATAL("expected pattern at %d:%d", p->current.line, p->current.col);
+    return NULL;
+}
+
 static Expr *parse_match_expr(Parser *p) {
     Token tok = p->current;
     parser_expect(p, TOK_MATCH, "expected 'match'");
@@ -1040,10 +1101,9 @@ static Expr *parse_match_expr(Parser *p) {
         arm.enum_name = str_dup_c(p->current.text);
         arm.enum_index = -1;
         arm.variant_index = -1;
-        arm.binding_names = NULL;
-        arm.binding_slots = NULL;
-        arm.binding_count = 0;
-        arm.binding_cap = 0;
+        arm.payload_patterns = NULL;
+        arm.payload_pattern_count = 0;
+        arm.payload_pattern_cap = 0;
         parser_advance(p);
         parser_expect(p, TOK_COLONCOLON, "expected '::' in match arm pattern");
         if (p->current.kind != TOK_IDENT) {
@@ -1054,15 +1114,11 @@ static Expr *parse_match_expr(Parser *p) {
         if (parser_match(p, TOK_LPAREN)) {
             if (!parser_match(p, TOK_RPAREN)) {
                 for (;;) {
-                    if (p->current.kind != TOK_IDENT) {
-                        FATAL("expected binding name in match arm at %d:%d", p->current.line, p->current.col);
-                    }
-                    match_arm_push_binding(&arm, str_dup_c(p->current.text));
-                    parser_advance(p);
+                    match_arm_push_pattern(&arm, parse_pattern(p));
                     if (parser_match(p, TOK_COMMA)) {
                         continue;
                     }
-                    parser_expect(p, TOK_RPAREN, "expected ')' after match arm binding names");
+                    parser_expect(p, TOK_RPAREN, "expected ')' after match arm patterns");
                     break;
                 }
             }
@@ -2086,6 +2142,29 @@ static Type sema_check_struct_literal(Sema *s, Expr *expr) {
     return expr->type;
 }
 
+static Type sema_check_pattern(Sema *s, Pattern *pattern, Type expected) {
+    if (pattern->kind == PAT_BINDING) {
+        sema_declare(s, pattern->name, expected, false, pattern->line, pattern->col);
+        pattern->slot = s->next_slot - 1;
+        return expected;
+    }
+    if (pattern->kind == PAT_TUPLE) {
+        if (expected.kind != TYPE_TUPLE) {
+            FATAL("tuple pattern requires tuple type at %d:%d", pattern->line, pattern->col);
+        }
+        if (pattern->item_count != expected.tuple_item_count) {
+            FATAL("tuple pattern arity mismatch at %d:%d", pattern->line, pattern->col);
+        }
+        pattern->temp_slot = s->next_slot++;
+        for (size_t i = 0; i < pattern->item_count; ++i) {
+            sema_check_pattern(s, pattern->items[i], expected.tuple_items[i]);
+        }
+        return expected;
+    }
+    FATAL("internal semantic error in pattern at %d:%d", pattern->line, pattern->col);
+    return type_invalid();
+}
+
 static Type sema_check_tuple_literal(Sema *s, Expr *expr) {
     Type tuple = type_tuple();
     for (size_t i = 0; i < expr->as.tuple_lit.item_count; ++i) {
@@ -2159,22 +2238,17 @@ static Type sema_check_match(Sema *s, Expr *expr) {
         arm->variant_index = variant_index;
 
         EnumVariant *variant = &enm->variants[variant_index];
-        if (variant->payload_type_count != arm->binding_count) {
+        if (variant->payload_type_count != arm->payload_pattern_count) {
             FATAL("match arm for '%s::%s' payload arity mismatch at %d:%d",
                   arm->enum_name, arm->variant_name, expr->line, expr->col);
         }
-        if (arm->binding_count > 0) {
-            sema_push_scope(s);
-            for (size_t j = 0; j < arm->binding_count; ++j) {
-                sema_declare(s, arm->binding_names[j], variant->payload_types[j], false, expr->line, expr->col);
-                arm->binding_slots[j] = s->next_slot - 1;
-            }
+        sema_push_scope(s);
+        for (size_t j = 0; j < arm->payload_pattern_count; ++j) {
+            sema_check_pattern(s, arm->payload_patterns[j], variant->payload_types[j]);
         }
 
         Type body_type = sema_check_expr(s, arm->body);
-        if (arm->binding_count > 0) {
-            sema_pop_scope(s);
-        }
+        sema_pop_scope(s);
         if (i == 0) {
             arm_type = body_type;
         } else if (!type_equals(arm_type, body_type)) {
@@ -2779,6 +2853,26 @@ static size_t codegen_call(Codegen *cg, Function *fn, BytecodeFunction *out, Exp
     return 1;
 }
 
+static void codegen_bind_pattern(Codegen *cg, Function *fn, BytecodeFunction *out, Pattern *pattern, LoopContext *loop_ctx) {
+    (void)cg;
+    (void)fn;
+    (void)loop_ctx;
+    if (pattern->kind == PAT_BINDING) {
+        instr_emit(&out->code, OP_STORE, pattern->slot, 0);
+        return;
+    }
+    if (pattern->kind == PAT_TUPLE) {
+        instr_emit(&out->code, OP_STORE, pattern->temp_slot, 0);
+        for (size_t i = pattern->item_count; i > 0; --i) {
+            instr_emit(&out->code, OP_LOAD, pattern->temp_slot, 0);
+            instr_emit(&out->code, OP_STRUCT_GET, (int)(i - 1), 0);
+            codegen_bind_pattern(cg, fn, out, pattern->items[i - 1], loop_ctx);
+        }
+        return;
+    }
+    FATAL("internal code generation error in pattern at %d:%d", pattern->line, pattern->col);
+}
+
 static size_t codegen_expr(Codegen *cg, Function *fn, BytecodeFunction *out, Expr *expr, LoopContext *loop_ctx) {
     (void)fn;
     switch (expr->kind) {
@@ -2907,11 +3001,11 @@ static size_t codegen_expr(Codegen *cg, Function *fn, BytecodeFunction *out, Exp
             instr_emit(&out->code, OP_EQ, 0, 0);
             size_t jump_next = instr_emit(&out->code, OP_JUMP_IF_FALSE, 0, 0);
 
-            if (arm->binding_count > 0) {
+            if (arm->payload_pattern_count > 0) {
                 instr_emit(&out->code, OP_LOAD, expr->as.match_expr.temp_slot, 0);
                 instr_emit(&out->code, OP_ENUM_GET, arm->enum_index, arm->variant_index);
-                for (size_t j = arm->binding_count; j > 0; --j) {
-                    instr_emit(&out->code, OP_STORE, arm->binding_slots[j - 1], 0);
+                for (size_t j = arm->payload_pattern_count; j > 0; --j) {
+                    codegen_bind_pattern(cg, fn, out, arm->payload_patterns[j - 1], loop_ctx);
                 }
             }
 

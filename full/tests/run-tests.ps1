@@ -27,6 +27,7 @@ $successCases = @(
     @{ Name = 'borrow_basic'; File = 'tests\samples\borrow_basic.rx'; ExitCode = 10 },
     @{ Name = 'borrow_fn_param'; File = 'tests\samples\borrow_fn_param.rx'; ExitCode = 9 },
     @{ Name = 'tuple_type_basic'; File = 'tests\samples\tuple_type_basic.rx'; ExitCode = 7 },
+    @{ Name = 'nested_tuple_pattern_match'; File = 'tests\samples\nested_tuple_pattern_match.rx'; ExitCode = 7 },
     @{ Name = 'enum_match'; File = 'tests\samples\enum_match.rx'; ExitCode = 2 }
     @{ Name = 'enum_payload_match'; File = 'tests\samples\enum_payload_match.rx'; ExitCode = 7 }
     @{ Name = 'enum_payload_tuple_match'; File = 'tests\samples\enum_payload_tuple_match.rx'; ExitCode = 7 }
@@ -49,6 +50,7 @@ $failureCases = @(
     @{ Name = 'duplicate_match_arm'; File = 'tests\samples\duplicate_match_arm.rx' },
     @{ Name = 'match_wrong_enum'; File = 'tests\samples\match_wrong_enum.rx' },
     @{ Name = 'tuple_type_error'; File = 'tests\samples\tuple_type_error.rx' },
+    @{ Name = 'nested_tuple_pattern_error'; File = 'tests\samples\nested_tuple_pattern_error.rx' },
     @{ Name = 'enum_payload_arity_error'; File = 'tests\samples\enum_payload_arity_error.rx' },
     @{ Name = 'enum_payload_binding_arity_error'; File = 'tests\samples\enum_payload_binding_arity_error.rx' },
     @{ Name = 'payload_binding_error'; File = 'tests\samples\payload_binding_error.rx' }

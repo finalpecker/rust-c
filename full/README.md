@@ -78,7 +78,7 @@ The suite includes:
 - Loop control with `break` / `continue`
 - Named struct construction and field projection
 - Enum variant values and exhaustive match checking
-- Enum payload construction and binding patterns, including tuple-like payloads
+- Enum payload construction and binding patterns, including nested tuple patterns
 - Borrow and dereference behaviors
 - Recursive calls
 - Block expressions and shadowing

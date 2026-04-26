@@ -1,0 +1,15 @@
+enum Wrap {
+    Wrap((i64, i64)),
+    None,
+}
+
+fn sum_wrap(v: Wrap) -> i64 {
+    match v {
+        Wrap::Wrap((a, b)) => a + b,
+        Wrap::None => 0,
+    }
+}
+
+fn main() -> i64 {
+    sum_wrap(Wrap::Wrap((3, 4)))
+}
